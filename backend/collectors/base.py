@@ -182,14 +182,19 @@ class BaseCollector:
         params: Optional[dict] = None,
         next_link_key: str = "@odata.nextLink",
         value_key: str = "value",
+        page_callback: Optional[Callable[[int], None]] = None,
+        extra_headers: Optional[dict] = None,
     ) -> list[dict]:
+        merged_headers = {**headers, **(extra_headers or {})}
         results: list[dict] = []
         current_url: Optional[str] = url
         current_params = params
 
         while current_url:
-            data = await self._get(client, current_url, headers, current_params)
+            data = await self._get(client, current_url, merged_headers, current_params)
             results.extend(data.get(value_key, []))
+            if page_callback:
+                page_callback(len(results))
             current_url = data.get(next_link_key)
             current_params = None  # nextLink already encodes original params
         return results
@@ -199,10 +204,12 @@ class BaseCollector:
         client: httpx.AsyncClient,
         url: str,
         params: Optional[dict] = None,
+        page_callback: Optional[Callable[[int], None]] = None,
     ) -> list[dict]:
         return await self._paginate(
             client, url, self._arm_headers(), params,
             next_link_key="nextLink",
+            page_callback=page_callback,
         )
 
     async def _paginate_graph(
@@ -210,10 +217,14 @@ class BaseCollector:
         client: httpx.AsyncClient,
         url: str,
         params: Optional[dict] = None,
+        page_callback: Optional[Callable[[int], None]] = None,
+        extra_headers: Optional[dict] = None,
     ) -> list[dict]:
         return await self._paginate(
             client, url, self._graph_headers(), params,
             next_link_key="@odata.nextLink",
+            page_callback=page_callback,
+            extra_headers=extra_headers,
         )
 
     async def _get_arm(
@@ -225,3 +236,21 @@ class BaseCollector:
         self, client: httpx.AsyncClient, url: str, params: Optional[dict] = None
     ) -> dict:
         return await self._get(client, url, self._graph_headers(), params)
+
+    async def _post_graph_query(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        body: dict,
+    ) -> dict:
+        """
+        Read-only POST to Graph API.
+
+        Some Graph query operations (e.g. directoryObjects/getByIds) use POST
+        because the request body contains large ID lists that exceed URL limits.
+        This is a query-only helper — it never writes data to Azure.
+        """
+        headers = {**self._graph_headers(), "Content-Type": "application/json"}
+        resp = await client.post(url, headers=headers, json=body, timeout=settings.api_timeout)
+        resp.raise_for_status()
+        return resp.json()

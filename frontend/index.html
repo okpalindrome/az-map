@@ -9,14 +9,25 @@
   <script src="/static/js/vendor/cytoscape.min.js"></script>
 </head>
 <body>
-<!-- Slim top progress bar — shown during scans, hidden otherwise -->
+<!-- Slim top accent bar -->
 <div id="top-progress-bar"></div>
+
+<!-- Full-screen scan progress overlay -->
+<div id="progress-overlay">
+  <div id="progress-phase-label">Initializing</div>
+  <div id="progress-pct">0%</div>
+  <div id="progress-bar-wrap"><div id="progress-bar-fill"></div></div>
+  <div id="progress-msg">Preparing scan&hellip;</div>
+</div>
 
 <!-- ── Toolbar ───────────────────────────────────────────────── -->
 <div id="toolbar">
   <div class="logo">az<span>-map</span></div>
   <div class="toolbar-sep"></div>
-  <input id="sub-input" type="text" placeholder="Subscription ID (e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)" />
+  <select id="sub-select">
+    <option value="">Loading subscriptions&hellip;</option>
+  </select>
+  <input id="sub-input" type="text" placeholder="Subscription ID (e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)" style="display:none;" />
   <button id="btn-scan" class="btn btn-primary">Scan</button>
   <div class="toolbar-sep"></div>
   <div class="view-tabs">

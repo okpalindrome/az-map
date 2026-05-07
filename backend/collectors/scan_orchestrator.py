@@ -214,6 +214,74 @@ class ScanOrchestrator:
                     graph_col.collect_all(client),
                 )
 
+                # Fetch group memberships only for groups that appear in RBAC assignments.
+                # Entra ID tenants can have 100K+ groups; fetching all members would be
+                # massively wasteful. Only security-enabled groups can hold RBAC roles.
+                rbac_principal_ids = {
+                    ra["principal_id"]
+                    for ra in rbac_data.get("role_assignments", [])
+                }
+                for dr in graph_data.get("directory_roles", []):
+                    if dr.get("principal_type", "").lower() == "group":
+                        rbac_principal_ids.add(dr["principal_id"])
+
+                collected_group_map = {g["id"]: g for g in graph_data.get("groups", [])}
+                relevant_groups = [
+                    collected_group_map[gid]
+                    for gid in rbac_principal_ids
+                    if gid in collected_group_map
+                ]
+
+                if relevant_groups:
+                    self._publish(
+                        "collect",
+                        f"Fetching memberships for {len(relevant_groups)} RBAC groups...",
+                        1, 5,
+                    )
+                    try:
+                        graph_data["group_memberships"] = await graph_col.get_all_group_memberships(
+                            client, relevant_groups
+                        )
+                    except Exception as e:
+                        logger.warning("Group membership collection failed: %s", str(e)[:200])
+                        graph_data["group_memberships"] = {}
+                else:
+                    graph_data["group_memberships"] = {}
+
+                # Collect user IDs from all sources then batch-fetch via getByIds.
+                # This avoids paginating through all 300K+ users in the tenant.
+                user_ids: set[str] = set()
+                for ra in rbac_data.get("role_assignments", []):
+                    if ra.get("principal_type", "Unknown") in ("User", "Unknown", ""):
+                        user_ids.add(ra["principal_id"])
+                for dr in graph_data.get("directory_roles", []):
+                    if dr.get("principal_type", "").lower() in ("user", ""):
+                        user_ids.add(dr["principal_id"])
+                for members in graph_data.get("group_memberships", {}).values():
+                    for m in members:
+                        if m.get("type", "user") == "user":
+                            user_ids.add(m["id"])
+
+                # Remove IDs already known to be groups or SPs to avoid fetching them
+                known_sp_ids = {sp["id"] for sp in graph_data.get("service_principals", [])}
+                known_group_ids = {g["id"] for g in graph_data.get("groups", [])}
+                user_ids -= known_sp_ids | known_group_ids
+
+                if user_ids:
+                    uid_list = list(user_ids)
+                    self._publish(
+                        "collect",
+                        f"Fetching {len(uid_list):,} RBAC/privileged users...",
+                        1, 5,
+                    )
+                    try:
+                        graph_data["users"] = await graph_col.get_users_by_ids(client, uid_list)
+                    except Exception as e:
+                        logger.warning("User batch fetch failed: %s", str(e)[:200])
+                        graph_data["users"] = []
+                else:
+                    graph_data["users"] = []
+
                 sub_info = azure_data.get("subscription", {})
                 self._update_scan(
                     subscription_name=sub_info.get("display_name", ""),

@@ -160,43 +160,59 @@ const TableView = (() => {
     });
   }
 
-  async function _renderInventory(container, scanId) {
-    const data = await API.getGraphElements(scanId, {});
-    const nodes = (data.elements.nodes || []).map(n => n.data).sort((a, b) => b.riskScore - a.riskScore);
+  let _inventoryOffset = 0;
+  const _inventoryLimit = 200;
 
-    if (nodes.length === 0) {
+  async function _renderInventory(container, scanId, offset = 0) {
+    _inventoryOffset = offset;
+    if (offset === 0) {
+      container.innerHTML = '<p style="color:#999; padding:20px;">Loading...</p>';
+    }
+
+    const data = await API.getInventory(scanId, { limit: _inventoryLimit, offset });
+    const nodes = data.nodes || [];
+    const total = data.total || 0;
+
+    if (total === 0) {
       container.innerHTML = '<p style="color:#999; padding:20px;">No resources found.</p>';
       return;
     }
 
-    const html = `
+    const header = `<div style="padding:10px 16px; font-size:12px; color:#666; background:#f8f8f8; border-bottom:1px solid #eee;">
+      Showing ${offset + 1}–${Math.min(offset + nodes.length, total)} of ${total.toLocaleString()} resources
+      (sorted by risk score)
+    </div>`;
+
+    const rows = nodes.map(n => `
+      <tr class="inventory-row" data-nodeid="${_esc(n.node_id)}" style="cursor:pointer;">
+        <td style="font-weight:500;">${_esc(n.display_name || n.name)}</td>
+        <td><span class="node-type-tag">${(n.node_type || '').replace(/_/g, ' ')}</span></td>
+        <td><span class="severity-badge ${n.risk_level === 'safe' ? 'low' : n.risk_level}">${n.risk_level}</span></td>
+        <td>
+          <div class="risk-bar-wrap">
+            <div class="risk-bar"><div class="risk-bar-fill" style="width:${(n.risk_score || 0) * 10}%; background:${_riskColor(n.risk_score)};"></div></div>
+            <span style="font-size:11px; color:#666;">${n.risk_score}</span>
+          </div>
+        </td>
+        <td style="font-size:12px; color:#666;">${(n.risk_reasons || []).slice(0, 2).join(', ') || '—'}</td>
+      </tr>`).join('');
+
+    const hasMore = offset + nodes.length < total;
+    const pagination = hasMore
+      ? `<div style="padding:12px 16px; text-align:center; border-top:1px solid #eee;">
+           <button id="inv-load-more" class="btn btn-ghost" style="font-size:12px;">
+             Load next ${_inventoryLimit} (${total - offset - nodes.length} remaining)
+           </button>
+         </div>`
+      : '';
+
+    container.innerHTML = header + `
       <table class="data-table">
         <thead>
-          <tr>
-            <th>Name</th>
-            <th>Type</th>
-            <th>Risk Level</th>
-            <th>Risk Score</th>
-            <th>Risk Reasons</th>
-          </tr>
+          <tr><th>Name</th><th>Type</th><th>Risk Level</th><th>Risk Score</th><th>Risk Reasons</th></tr>
         </thead>
-        <tbody>
-          ${nodes.map(n => `
-          <tr class="inventory-row" data-nodeid="${_esc(n.id)}" style="cursor:pointer;">
-            <td style="font-weight:500;">${_esc(n.fullLabel || n.label)}</td>
-            <td><span class="node-type-tag">${n.nodeType.replace(/_/g, ' ')}</span></td>
-            <td><span class="severity-badge ${n.riskLevel === 'safe' ? 'low' : n.riskLevel}">${n.riskLevel}</span></td>
-            <td>
-              <div class="risk-bar-wrap">
-                <div class="risk-bar"><div class="risk-bar-fill" style="width:${n.riskScore * 10}%; background:${_riskColor(n.riskScore)};"></div></div>
-                <span style="font-size:11px; color:#666;">${n.riskScore}</span>
-              </div>
-            </td>
-            <td style="font-size:12px; color:#666;">${(n.riskReasons || []).slice(0, 2).join(', ') || '—'}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>`;
-    container.innerHTML = html;
+        <tbody>${rows}</tbody>
+      </table>` + pagination;
 
     container.querySelectorAll('.inventory-row').forEach(row => {
       row.addEventListener('click', () => {
@@ -207,6 +223,10 @@ const TableView = (() => {
           DetailPanel.show(scanId, nodeId);
         }, 100);
       });
+    });
+
+    document.getElementById('inv-load-more')?.addEventListener('click', () => {
+      _renderInventory(container, scanId, offset + _inventoryLimit);
     });
   }
 

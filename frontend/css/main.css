@@ -725,7 +725,7 @@ body {
 #welcome h2 { font-size: 22px; font-weight: 600; color: var(--text); }
 #welcome p { max-width: 360px; line-height: 1.6; }
 
-/* ── Top progress bar (pip-style, replaces full-screen overlay) ── */
+/* ── Slim top accent bar (always visible during scans as secondary indicator) ── */
 #top-progress-bar {
   position: fixed;
   top: 0;
@@ -738,9 +738,82 @@ body {
   transition: width 0.35s ease, opacity 0.2s ease;
   pointer-events: none;
 }
-#top-progress-bar.visible {
-  opacity: 1;
+#top-progress-bar.visible { opacity: 1; }
+
+/* ── Full-screen scan progress overlay ── */
+#progress-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(4px);
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.3s ease, visibility 0.3s;
+  pointer-events: none;
 }
+#progress-overlay.visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: all;
+}
+#progress-phase-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-faint);
+}
+#progress-pct {
+  font-size: 56px;
+  font-weight: 800;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -3px;
+  line-height: 1;
+}
+#progress-bar-wrap {
+  width: min(360px, 70vw);
+  height: 8px;
+  background: #e8e8e8;
+  border-radius: 4px;
+  overflow: hidden;
+}
+#progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  width: 0%;
+  transition: width 0.4s ease;
+}
+#progress-msg {
+  font-size: 13px;
+  color: var(--text-muted);
+  max-width: 360px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* ── Subscription select (toolbar) ── */
+#sub-select {
+  flex: 1;
+  max-width: 340px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  outline: none;
+  background: var(--bg-secondary);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+#sub-select:focus { border-color: var(--accent); }
 
 /* ── Tooltip ──────────────────────────────── */
 #tooltip {

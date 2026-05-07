@@ -26,6 +26,7 @@ const API = {
   listScans: () => API.get('/api/scan/'),
   getScan: (id) => API.get(`/api/scan/${id}`),
   deleteScan: (id) => API.del(`/api/scan/${id}`),
+  listSubscriptions: () => API.get('/api/scan/subscriptions'),
 
   streamScan(scanId, onEvent, onDone) {
     const es = new EventSource(`/api/scan/stream/${scanId}`);
@@ -50,6 +51,12 @@ const API = {
   },
   getNodeDetail: (scanId, nodeId) => API.get(`/api/graph/${scanId}/node/${encodeURIComponent(nodeId)}`),
   getGraphStats: (scanId) => API.get(`/api/graph/${scanId}/stats`),
+  getInventory: (scanId, params = {}) => {
+    const qs = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+    ).toString();
+    return API.get(`/api/graph/${scanId}/inventory${qs ? '?' + qs : ''}`);
+  },
   getAttackPaths: (scanId, params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return API.get(`/api/graph/${scanId}/paths?${qs}`);

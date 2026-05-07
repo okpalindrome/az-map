@@ -17,6 +17,7 @@ def get_graph_elements(
     node_types: Optional[str] = Query(None, description="Comma-separated node types to include"),
     risk_levels: Optional[str] = Query(None, description="Comma-separated risk levels: safe,risky,critical"),
     search: Optional[str] = Query(None, description="Search string for node name/id", max_length=200),
+    limit: int = Query(2000, ge=100, le=10000, description="Max nodes to return (sorted by risk desc)"),
     db: Session = Depends(get_db),
 ):
     """Return Cytoscape.js-ready graph elements for a scan."""
@@ -27,7 +28,55 @@ def get_graph_elements(
     nt = [t.strip() for t in node_types.split(",")] if node_types else None
     rl = [l.strip() for l in risk_levels.split(",")] if risk_levels else None
 
-    return graph_to_cytoscape(scan_id, db, node_types=nt, risk_levels=rl, search=search)
+    return graph_to_cytoscape(scan_id, db, node_types=nt, risk_levels=rl, search=search, limit=limit)
+
+
+@router.get("/{scan_id}/inventory")
+def get_inventory(
+    scan_id: str,
+    limit: int = Query(200, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+    node_type: Optional[str] = Query(None, description="Comma-separated node types"),
+    sort_by: str = Query("risk_score", enum=["risk_score", "name", "node_type"]),
+    db: Session = Depends(get_db),
+):
+    """Paginated lightweight node inventory — avoids loading all nodes into memory."""
+    from ..models.db_models import Node
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+
+    q = db.query(Node).filter(Node.scan_id == scan_id)
+    if node_type:
+        types = [t.strip() for t in node_type.split(",")]
+        q = q.filter(Node.node_type.in_(types))
+
+    order_col = {
+        "risk_score": Node.risk_score.desc(),
+        "name": Node.name,
+        "node_type": Node.node_type,
+    }[sort_by]
+
+    total = q.count()
+    nodes = q.order_by(order_col).offset(offset).limit(limit).all()
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "nodes": [
+            {
+                "node_id": n.node_id,
+                "node_type": n.node_type,
+                "name": n.name,
+                "display_name": n.display_name,
+                "risk_score": n.risk_score,
+                "risk_level": n.risk_level,
+                "risk_reasons": n.risk_reasons or [],
+            }
+            for n in nodes
+        ],
+    }
 
 
 @router.get("/{scan_id}/node/{node_id}")

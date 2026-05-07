@@ -38,8 +38,11 @@ class AzureCollector(BaseCollector):
 
     async def get_resource_groups(self, client: httpx.AsyncClient) -> list[dict]:
         url = f"{self._sub_base}/resourcegroups?api-version=2021-04-01"
-        self._report("azure", "Collecting resource groups...")
-        items = await self._paginate_arm(client, url)
+        self._report("collect", "Resource groups: collecting...")
+        items = await self._paginate_arm(
+            client, url,
+            page_callback=lambda n: self._report("collect", f"Resource groups: {n:,}"),
+        )
         return [
             {
                 "id": rg.get("id", ""),
@@ -51,9 +54,12 @@ class AzureCollector(BaseCollector):
         ]
 
     async def get_storage_accounts(self, client: httpx.AsyncClient) -> list[dict]:
-        url = f"{self._sub_base}/providers/Microsoft.Storage/storageAccounts?api-version=2023-01-01"
-        self._report("azure", "Collecting storage accounts...")
-        items = await self._paginate_arm(client, url)
+        url = f"{self._sub_base}/providers/Microsoft.Storage/storageAccounts?api-version=2024-01-01"
+        self._report("collect", "Storage accounts: collecting...")
+        items = await self._paginate_arm(
+            client, url,
+            page_callback=lambda n: self._report("collect", f"Storage accounts: {n:,}"),
+        )
         return [
             {
                 "id": s.get("id", ""),
@@ -72,9 +78,12 @@ class AzureCollector(BaseCollector):
         ]
 
     async def get_key_vaults(self, client: httpx.AsyncClient) -> list[dict]:
-        url = f"{self._sub_base}/providers/Microsoft.KeyVault/vaults?api-version=2023-07-01"
-        self._report("azure", "Collecting Key Vaults...")
-        items = await self._paginate_arm(client, url)
+        url = f"{self._sub_base}/providers/Microsoft.KeyVault/vaults?api-version=2024-04-01"
+        self._report("collect", "Key Vaults: collecting...")
+        items = await self._paginate_arm(
+            client, url,
+            page_callback=lambda n: self._report("collect", f"Key Vaults: {n:,}"),
+        )
         return [
             {
                 "id": kv.get("id", ""),
@@ -102,7 +111,7 @@ class AzureCollector(BaseCollector):
             f"{self._sub_base}/providers/Microsoft.Authorization/policyAssignments"
             "?api-version=2022-06-01"
         )
-        self._report("azure", "Collecting Azure Policy assignments...")
+        self._report("collect", "Policy assignments: collecting...")
         try:
             items = await self._paginate_arm(client, url)
         except Exception as e:
@@ -127,8 +136,11 @@ class AzureCollector(BaseCollector):
 
     async def get_function_apps(self, client: httpx.AsyncClient) -> list[dict]:
         url = f"{self._sub_base}/providers/Microsoft.Web/sites?api-version=2023-01-01"
-        self._report("azure", "Collecting Function Apps / App Services...")
-        items = await self._paginate_arm(client, url)
+        self._report("collect", "Function Apps / App Services: collecting...")
+        items = await self._paginate_arm(
+            client, url,
+            page_callback=lambda n: self._report("collect", f"Apps: {n:,}"),
+        )
         results = []
         for site in items:
             kind = site.get("kind", "")
@@ -154,7 +166,7 @@ class AzureCollector(BaseCollector):
 
     async def get_automation_accounts(self, client: httpx.AsyncClient) -> list[dict]:
         url = f"{self._sub_base}/providers/Microsoft.Automation/automationAccounts?api-version=2023-11-01"
-        self._report("azure", "Collecting Automation Accounts...")
+        self._report("collect", "Automation accounts: collecting...")
         try:
             items = await self._paginate_arm(client, url)
         except Exception:
@@ -173,7 +185,7 @@ class AzureCollector(BaseCollector):
 
     async def get_virtual_machines(self, client: httpx.AsyncClient) -> list[dict]:
         url = f"{self._sub_base}/providers/Microsoft.Compute/virtualMachines?api-version=2024-03-01"
-        self._report("azure", "Collecting Virtual Machines...")
+        self._report("collect", "Virtual machines: collecting...")
         try:
             items = await self._paginate_arm(client, url)
         except Exception:
@@ -195,8 +207,8 @@ class AzureCollector(BaseCollector):
         return results
 
     async def get_user_assigned_managed_identities(self, client: httpx.AsyncClient) -> list[dict]:
-        url = f"{self._sub_base}/providers/Microsoft.ManagedIdentity/userAssignedIdentities?api-version=2023-07-31-preview"
-        self._report("azure", "Collecting User-Assigned Managed Identities...")
+        url = f"{self._sub_base}/providers/Microsoft.ManagedIdentity/userAssignedIdentities?api-version=2023-01-31"
+        self._report("collect", "Managed identities: collecting...")
         try:
             items = await self._paginate_arm(client, url)
         except Exception:
@@ -317,7 +329,7 @@ class AzureCollector(BaseCollector):
 
     async def collect_all(self, client: httpx.AsyncClient) -> dict:
         """Run all resource collectors concurrently and return combined result."""
-        self._report("azure", "Starting Azure resource collection...", 0, 7)
+        self._report("collect", "Azure resources: starting...", 0, 7)
 
         (
             sub_info,

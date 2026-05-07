@@ -79,8 +79,11 @@ class RBACCollector(BaseCollector):
             f"{ARM}{self._sub_scope}/providers/Microsoft.Authorization/roleDefinitions"
             "?api-version=2022-04-01"
         )
-        self._report("rbac", "Collecting role definitions...")
-        items = await self._paginate_arm(client, url)
+        self._report("collect", "Role definitions: collecting...")
+        items = await self._paginate_arm(
+            client, url,
+            page_callback=lambda n: self._report("collect", f"Role definitions: {n:,}"),
+        )
         results = []
         for rd in items:
             props = rd.get("properties", {})
@@ -106,8 +109,11 @@ class RBACCollector(BaseCollector):
             f"{ARM}{self._sub_scope}/providers/Microsoft.Authorization/roleAssignments"
             "?api-version=2022-04-01"
         )
-        self._report("rbac", "Collecting role assignments...")
-        items = await self._paginate_arm(client, url)
+        self._report("collect", "Role assignments: collecting...")
+        items = await self._paginate_arm(
+            client, url,
+            page_callback=lambda n: self._report("collect", f"Role assignments: {n:,}"),
+        )
         results = []
         for ra in items:
             props = ra.get("properties", {})
@@ -124,7 +130,7 @@ class RBACCollector(BaseCollector):
 
     async def collect_all(self, client: httpx.AsyncClient) -> dict:
         import asyncio
-        self._report("rbac", "Starting RBAC collection...", 0, 2)
+        self._report("collect", "RBAC: starting...", 0, 2)
         role_defs, role_assigns = await asyncio.gather(
             self.get_role_definitions(client),
             self.get_role_assignments(client),

@@ -15,7 +15,7 @@ const App = (() => {
     _bindAttackPathPanel();
     _bindDiffModal();
     _bindTenantModal();
-    await Promise.all([_loadScanList(), _loadTenantList()]);
+    await Promise.all([_loadScanList(), _loadTenantList(), _loadSubscriptions()]);
     _showWelcome(true);
   }
 
@@ -26,6 +26,51 @@ const App = (() => {
     document.getElementById('tenant-modal')?.addEventListener('click', (e) => {
       if (e.target === document.getElementById('tenant-modal')) _closeTenantModal();
     });
+  }
+
+  // ── Subscription select ────────────────────
+  async function _loadSubscriptions() {
+    const sel = document.getElementById('sub-select');
+    const inp = document.getElementById('sub-input');
+    try {
+      const subs = await API.listSubscriptions();
+      if (!sel) return;
+      if (subs.length === 0) {
+        if (sel) sel.style.display = 'none';
+        if (inp) inp.style.display = '';
+        return;
+      }
+      sel.innerHTML = subs.map(s =>
+        `<option value="${_esc(s.id)}"${s.is_default ? ' selected' : ''}>${_esc(s.name)}</option>`
+      ).join('') + `<option value="">— Enter ID manually —</option>`;
+      sel.style.display = '';
+      if (inp) inp.style.display = 'none';
+
+      sel.addEventListener('change', () => {
+        if (!sel.value) {
+          sel.style.display = 'none';
+          if (inp) { inp.style.display = ''; inp.focus(); }
+        }
+      });
+    } catch (_) {
+      if (sel) sel.style.display = 'none';
+      if (inp) inp.style.display = '';
+    }
+  }
+
+  function _getSubId() {
+    const sel = document.getElementById('sub-select');
+    if (sel && sel.style.display !== 'none' && sel.value) return sel.value;
+    return (document.getElementById('sub-input').value || '').trim();
+  }
+
+  function _getSubLabel() {
+    const sel = document.getElementById('sub-select');
+    if (sel && sel.style.display !== 'none' && sel.value) {
+      const opt = sel.options[sel.selectedIndex];
+      return opt ? opt.textContent.trim() : null;
+    }
+    return null;
   }
 
   // ── Toolbar ────────────────────────────────
@@ -116,9 +161,11 @@ const App = (() => {
 
   // ── Scan start ──────────────────────────────
   async function _startScan() {
-    const subId = document.getElementById('sub-input').value.trim();
+    const subId = _getSubId();
     if (!subId) {
-      document.getElementById('sub-input').focus();
+      const sel = document.getElementById('sub-select');
+      if (sel && sel.style.display !== 'none') sel.focus();
+      else document.getElementById('sub-input').focus();
       return;
     }
     const btn = document.getElementById('btn-scan');
@@ -126,7 +173,7 @@ const App = (() => {
     btn.textContent = 'Starting…';
 
     try {
-      const scan = await API.startScan(subId);
+      const scan = await API.startScan(subId, _getSubLabel());
       _setStatus('running', 'Scan running…');
       _showProgress(true, 0, 'Initializing…', 'init');
       _showWelcome(false);
@@ -470,26 +517,38 @@ const App = (() => {
     return html;
   }
 
-  // ── Progress — slim top bar (pip-style) ───────────────────────
+  // ── Progress — full-screen overlay with percentage ────────────
   function _showProgress(visible, pct = 0, msg = '', phase = '') {
+    const overlay = document.getElementById('progress-overlay');
     const bar = document.getElementById('top-progress-bar');
-    if (!bar) return;
 
     if (visible) {
-      bar.classList.add('visible');
-      bar.style.width = `${Math.max(pct, 2)}%`;
-      // Show progress in status area instead of blocking the UI
-      const label = phase && phase !== 'done' && phase !== 'error'
-        ? `${phase} — ${msg}`
-        : msg;
-      _setStatus('running', label);
+      const rounded = Math.round(pct);
+      if (overlay) {
+        document.getElementById('progress-phase-label').textContent = phase || 'scanning';
+        document.getElementById('progress-pct').textContent = `${rounded}%`;
+        document.getElementById('progress-bar-fill').style.width = `${Math.max(pct, 2)}%`;
+        document.getElementById('progress-msg').textContent = msg;
+        overlay.classList.add('visible');
+      }
+      if (bar) {
+        bar.classList.add('visible');
+        bar.style.width = `${Math.max(pct, 2)}%`;
+      }
+      _setStatus('running', `${phase} — ${msg}`);
     } else {
-      // Animate to 100% then fade out
-      bar.style.width = '100%';
-      setTimeout(() => {
-        bar.classList.remove('visible');
-        setTimeout(() => { bar.style.width = '0%'; }, 220);
-      }, 350);
+      if (overlay) {
+        document.getElementById('progress-pct').textContent = '100%';
+        document.getElementById('progress-bar-fill').style.width = '100%';
+        setTimeout(() => overlay.classList.remove('visible'), 450);
+      }
+      if (bar) {
+        bar.style.width = '100%';
+        setTimeout(() => {
+          bar.classList.remove('visible');
+          setTimeout(() => { bar.style.width = '0%'; }, 220);
+        }, 450);
+      }
     }
   }
 

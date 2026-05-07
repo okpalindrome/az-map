@@ -81,6 +81,34 @@ def _scan_to_response(scan: Scan) -> ScanResponse:
     )
 
 
+@router.get("/subscriptions")
+async def list_subscriptions():
+    """Return Azure subscriptions available via the current az login session."""
+    import asyncio, json
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "az", "account", "list", "--output", "json", "--all",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        if proc.returncode == 0 and stdout.strip():
+            subs = json.loads(stdout.decode())
+            return [
+                {
+                    "id": s["id"],
+                    "name": s["name"],
+                    "tenant_id": s.get("tenantId", ""),
+                    "is_default": s.get("isDefault", False),
+                }
+                for s in subs
+                if s.get("state") in (None, "Enabled")
+            ]
+    except Exception:
+        pass
+    return []
+
+
 @router.post("/start", response_model=ScanResponse)
 async def start_scan(
     body: ScanStartRequest,

@@ -88,6 +88,7 @@ def graph_to_cytoscape(
     node_types: Optional[list[str]] = None,
     risk_levels: Optional[list[str]] = None,
     search: Optional[str] = None,
+    limit: int = 2000,
 ) -> dict:
     """
     Serialize DB graph to Cytoscape.js elements format with filtering.
@@ -109,7 +110,7 @@ def graph_to_cytoscape(
             )
         )
 
-    nodes = node_query.all()
+    nodes = node_query.order_by(Node.risk_score.desc()).limit(limit).all()
     visible_ids = {n.node_id for n in nodes}
 
     cy_nodes = []
@@ -117,9 +118,9 @@ def graph_to_cytoscape(
         color = NODE_COLORS.get(n.node_type, NODE_COLORS["unknown"])
         shape = NODE_SHAPES.get(n.node_type, "ellipse")
         border_color = RISK_BORDER_COLORS.get(n.risk_level, RISK_BORDER_COLORS["safe"])
-        label = n.display_name or n.name
+        label = n.display_name or n.name or n.node_id or ""
         if len(label) > 25:
-            label = label[:23] + "…"
+            label = label[:23] + "..."
         cy_nodes.append({
             "data": {
                 "id": n.node_id,
