@@ -9,6 +9,8 @@
   <script src="/static/js/vendor/cytoscape.min.js"></script>
 </head>
 <body>
+<!-- Slim top progress bar — shown during scans, hidden otherwise -->
+<div id="top-progress-bar"></div>
 
 <!-- ── Toolbar ───────────────────────────────────────────────── -->
 <div id="toolbar">
@@ -159,16 +161,6 @@
       <h2>Azure Security Mapper</h2>
       <p>Enter an Azure Subscription ID above and click <strong>Scan</strong> to map privilege relationships, detect escalation paths, and visualize your Azure attack surface.</p>
       <p style="font-size:12px; color:#bbb;">Make sure you're logged in via <code style="background:#f5f5f5; padding:2px 5px; border-radius:3px;">az login</code> before scanning.</p>
-    </div>
-
-    <!-- Progress overlay -->
-    <div id="progress-overlay">
-      <div style="font-size:16px; font-weight:600; color:#1a1a1a;">Scanning Azure Environment</div>
-      <div class="progress-bar-wrap">
-        <div class="progress-bar-fill" style="width:0%;"></div>
-      </div>
-      <div id="progress-msg">Initializing…</div>
-      <div id="progress-phase"></div>
     </div>
 
     <!-- Graph view -->

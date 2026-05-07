@@ -4,6 +4,8 @@ then triggers analyzers.
 """
 import asyncio
 import logging
+import shutil
+import sys
 import uuid
 from datetime import datetime
 from typing import Any, Callable, Optional
@@ -21,23 +23,89 @@ from .graph_collector import GraphCollector
 
 logger = logging.getLogger(__name__)
 
+_BAR_CHARS = 26  # width of the ████░░░░ section
+
+# Phase label → (weight_start, weight_end) so the bar feels proportional
+_PHASE_WEIGHTS = {
+    "init":     (0,  5),
+    "collect":  (5,  60),
+    "persist":  (60, 72),
+    "analyze":  (72, 95),
+    "done":     (100, 100),
+    "error":    (100, 100),
+}
+
+
+def _render_bar(pct: int) -> str:
+    filled = int(_BAR_CHARS * pct / 100)
+    return "█" * filled + "░" * (_BAR_CHARS - filled)
+
+
+def _terminal_progress(phase: str, message: str, current: int, total: int) -> None:
+    """Write a single-line pip-style progress bar to stdout, updating in place."""
+    w0, w1 = _PHASE_WEIGHTS.get(phase, (0, 100))
+    if total > 0:
+        inner = current / total
+        pct = int(w0 + (w1 - w0) * inner)
+    else:
+        pct = w0
+
+    cols = shutil.get_terminal_size(fallback=(100, 24)).columns
+    bar = _render_bar(pct)
+    phase_col = f"{phase:<8}"
+    # Truncate message to fit terminal width; leave room for bar prefix
+    prefix = f"  {phase_col}  [{bar}] {pct:3d}%  "
+    msg_width = max(cols - len(prefix) - 2, 10)
+    msg = message[:msg_width]
+    line = f"\r{prefix}{msg}"
+    # Pad with spaces to erase any leftover from a longer previous line
+    line = line.ljust(min(cols - 1, 120))
+    sys.stdout.write(line)
+    sys.stdout.flush()
+    if phase in ("done", "error"):
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
 
 class ScanOrchestrator:
-    """Full scan pipeline: collect → persist → analyze."""
+    """
+    Full scan pipeline: collect → persist → analyze.
+
+    Session management
+    ------------------
+    The orchestrator does NOT hold a shared SQLAlchemy session.  Every method
+    that needs the DB creates its own short-lived session, commits, and closes
+    it.  This avoids three failure modes:
+
+    1. The FastAPI request session is closed when the HTTP response is sent,
+       before the BackgroundTask has finished — any later use is use-after-close.
+    2. asyncio.to_thread() runs _persist_all / _run_analyzers in a thread-pool
+       thread; sharing a session across threads causes SQLite to deadlock.
+    3. Concurrent readers (SSE stream) and the writer (background task) conflict
+       on the default SQLite journal mode — fixed by WAL mode in database.py,
+       but clean session boundaries make it robust regardless.
+    """
 
     def __init__(
         self,
         scan_id: str,
         subscription_id: str,
-        db: Session,
         reuse_collection: bool = False,
     ):
         self.scan_id = scan_id
         self.subscription_id = subscription_id
-        self.db = db
         self.reuse_collection = reuse_collection
         self._progress: dict = {}
         self._subscribers: list[asyncio.Queue] = []
+
+    # ------------------------------------------------------------------
+    # DB helper — always creates a fresh session
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _new_db():
+        from ..database import SessionLocal
+        return SessionLocal()
 
     # ------------------------------------------------------------------
     # Progress / SSE helpers
@@ -48,6 +116,12 @@ class ScanOrchestrator:
         self._subscribers.append(q)
         return q
 
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        try:
+            self._subscribers.remove(q)
+        except ValueError:
+            pass
+
     def _publish(self, phase: str, message: str, current: int = 0, total: int = 0):
         self._progress = {
             "phase": phase,
@@ -55,11 +129,20 @@ class ScanOrchestrator:
             "current": current,
             "total": total,
         }
-        # Update DB progress
-        scan = self.db.query(Scan).filter(Scan.id == self.scan_id).first()
-        if scan:
-            scan.progress = self._progress
-            self.db.commit()
+        # Terminal progress bar — pip-style, updates in place
+        _terminal_progress(phase, message, current, total)
+        # Persist progress to DB with its own short-lived session
+        db = self._new_db()
+        try:
+            scan = db.query(Scan).filter(Scan.id == self.scan_id).first()
+            if scan:
+                scan.progress = self._progress
+                db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+        # Push to SSE subscribers
         for q in list(self._subscribers):
             try:
                 q.put_nowait(self._progress.copy())
@@ -73,12 +156,34 @@ class ScanOrchestrator:
     # Main entry point
     # ------------------------------------------------------------------
 
+    def _update_scan(self, **kwargs) -> None:
+        """Persist arbitrary field updates on the Scan record."""
+        db = self._new_db()
+        try:
+            scan = db.query(Scan).filter(Scan.id == self.scan_id).first()
+            if scan:
+                for k, v in kwargs.items():
+                    setattr(scan, k, v)
+                db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+
     async def run(self) -> str:
         """Execute full scan. Returns scan_id."""
-        db = self.db
-        scan = db.query(Scan).filter(Scan.id == self.scan_id).first()
-        if not scan:
+        # Verify scan exists before we start
+        db = self._new_db()
+        try:
+            exists = db.query(Scan).filter(Scan.id == self.scan_id).first() is not None
+        finally:
+            db.close()
+        if not exists:
             raise ValueError(f"Scan {self.scan_id} not found")
+
+        sub_short = self.subscription_id[:8]
+        sys.stdout.write(f"\nScan  {sub_short}…  [{self.scan_id[:8]}]\n")
+        sys.stdout.flush()
 
         try:
             async with httpx.AsyncClient(timeout=settings.api_timeout) as client:
@@ -86,27 +191,20 @@ class ScanOrchestrator:
 
                 # --- 1. Collect (or reuse cached collection) ---
                 if self.reuse_collection:
-                    cached = self._find_cached_scan()
-                    if cached:
-                        self._publish("collect", f"Reusing collection from scan {cached.id[:8]}…", 1, 5)
-                        nodes, role_name_map = await asyncio.to_thread(self._copy_collection, cached)
-                        # Pull rbac/graph data from cache for analyzer
+                    cached_info = await asyncio.to_thread(self._find_cached_scan_info)
+                    if cached_info:
+                        cached_id, sub_name, tenant_id = cached_info
+                        self._publish("collect", f"Reusing collection from scan {cached_id[:8]}…", 1, 5)
+                        nodes, role_name_map = await asyncio.to_thread(self._copy_collection, cached_id)
                         rbac_data, graph_data = await asyncio.to_thread(self._load_rbac_graph_from_db)
-                        scan.subscription_name = cached.subscription_name
-                        scan.tenant_id = cached.tenant_id
-                        db.commit()
-                        # Jump straight to analyze
+                        self._update_scan(subscription_name=sub_name, tenant_id=tenant_id)
                         self._publish("analyze", "Running security analysis...", 3, 5)
                         await asyncio.to_thread(self._run_analyzers, nodes, rbac_data, graph_data, role_name_map)
-                        scan.status = "completed"
-                        scan.completed_at = datetime.utcnow()
-                        scan.progress = {"phase": "done", "message": "Scan complete (cached)", "current": 5, "total": 5}
-                        db.commit()
-                        self._publish("done", "Scan complete (cached collection)", 5, 5)
+                        self._finish_scan(cached=True)
                         return self.scan_id
 
                 azure_col = AzureCollector(self.subscription_id, self._progress_callback)
-                rbac_col = RBACCollector(self.subscription_id, self._progress_callback)
+                rbac_col  = RBACCollector(self.subscription_id, self._progress_callback)
                 graph_col = GraphCollector(self._progress_callback)
 
                 self._publish("collect", "Collecting Azure resources and identities...", 1, 5)
@@ -116,48 +214,65 @@ class ScanOrchestrator:
                     graph_col.collect_all(client),
                 )
 
-                # Update subscription metadata on scan record
                 sub_info = azure_data.get("subscription", {})
-                scan.subscription_name = sub_info.get("display_name", "")
-                scan.tenant_id = (
-                    sub_info.get("tenant_id")
-                    or graph_data.get("tenant_info", {}).get("tenant_id", "")
+                self._update_scan(
+                    subscription_name=sub_info.get("display_name", ""),
+                    tenant_id=(
+                        sub_info.get("tenant_id")
+                        or graph_data.get("tenant_info", {}).get("tenant_id", "")
+                    ),
                 )
-                db.commit()
 
-                # Merge runbooks + policy_assignments into rbac_data for analyzer context
-                rbac_data["runbooks"] = azure_data.get("runbooks", [])
+                rbac_data["runbooks"]           = azure_data.get("runbooks", [])
                 rbac_data["policy_assignments"] = azure_data.get("policy_assignments", [])
-                # Merge CA policies into graph_data
-                graph_data["ca_policies"] = graph_data.get("ca_policies", [])
+                graph_data["ca_policies"]       = graph_data.get("ca_policies", [])
 
-                # --- 2. Persist ---
+                # --- 2. Persist (own thread + own session) ---
                 self._publish("persist", "Persisting collected data...", 2, 5)
                 nodes, role_name_map = await asyncio.to_thread(
                     self._persist_all, azure_data, rbac_data, graph_data
                 )
 
-                # --- 3. Analyze ---
+                # --- 3. Analyze (own thread + own session) ---
                 self._publish("analyze", "Running security analysis...", 3, 5)
                 await asyncio.to_thread(self._run_analyzers, nodes, rbac_data, graph_data, role_name_map)
 
                 # --- 4. Done ---
-                scan.status = "completed"
-                scan.completed_at = datetime.utcnow()
-                scan.progress = {"phase": "done", "message": "Scan complete", "current": 5, "total": 5}
-                db.commit()
-                self._publish("done", "Scan complete", 5, 5)
+                self._finish_scan(cached=False)
 
         except Exception as e:
-            logger.exception(f"Scan {self.scan_id} failed: {e}")
+            logger.warning("Scan %s failed: %s", self.scan_id, str(e)[:200])
+            self._update_scan(
+                status="failed",
+                error=str(e)[:1000],
+                completed_at=datetime.utcnow(),
+            )
+            self._publish("error", f"Scan failed: {str(e)[:120]}")
+            raise
+
+        return self.scan_id
+
+    def _finish_scan(self, cached: bool) -> None:
+        """Count findings and mark the scan as completed."""
+        from ..models.db_models import Finding as FindingModel
+        db = self._new_db()
+        try:
+            count = db.query(FindingModel).filter(
+                FindingModel.scan_id == self.scan_id
+            ).count()
+            suffix = " (cached)" if cached else ""
+            done_msg = f"Done — {count} finding{'s' if count != 1 else ''}{suffix}"
             scan = db.query(Scan).filter(Scan.id == self.scan_id).first()
             if scan:
-                scan.status = "failed"
-                scan.error = str(e)
+                scan.status = "completed"
                 scan.completed_at = datetime.utcnow()
+                scan.progress = {"phase": "done", "message": done_msg, "current": 5, "total": 5}
                 db.commit()
-            self._publish("error", f"Scan failed: {e}")
-            raise
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+        self._publish("done", done_msg if 'done_msg' in dir() else "Done", 5, 5)
 
         return self.scan_id
 
@@ -171,14 +286,25 @@ class ScanOrchestrator:
         rbac_data: dict,
         graph_data: dict,
     ) -> tuple[dict, dict]:
-        """Write all nodes, edges, role defs, and role assignments to DB. Returns node registry."""
-        db = self.db
+        """
+        Write all nodes, edges, role defs, and role assignments to DB.
+        Runs in a thread-pool worker via asyncio.to_thread() — creates its
+        own session so it never shares state with the async event loop thread.
+        Returns (node_registry, role_name_map).
+        """
+        db = self._new_db()
         scan_id = self.scan_id
-        node_registry: dict[str, str] = {}  # azure_id → node_id
+        node_registry: dict[str, str] = {}    # azure_id → db Node.id
+        seen_node_ids: set[str] = set()        # guard against duplicate node_id inserts
 
         def _add_node(node_id: str, node_type: str, name: str, display_name: str = "", properties: dict = None):
             if not node_id:
                 return
+            # A managed-identity principal_id == its service-principal id in Graph;
+            # whichever is inserted first wins — skip silently on duplicates.
+            if node_id in seen_node_ids:
+                return
+            seen_node_ids.add(node_id)
             n = Node(
                 id=str(uuid.uuid4()),
                 scan_id=scan_id,
@@ -329,34 +455,65 @@ class ScanOrchestrator:
                 "is_privileged": dr["is_privileged"],
             })
 
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
         return node_registry, role_name_map
 
     # ------------------------------------------------------------------
     # Incremental scan helpers
     # ------------------------------------------------------------------
 
+    def _find_cached_scan_info(self) -> Optional[tuple]:
+        """Return (scan_id, sub_name, tenant_id) of the most recent completed scan for this sub."""
+        db = self._new_db()
+        try:
+            scan = (
+                db.query(Scan)
+                .filter(
+                    Scan.subscription_id == self.subscription_id,
+                    Scan.status == "completed",
+                    Scan.id != self.scan_id,
+                )
+                .order_by(Scan.completed_at.desc())
+                .first()
+            )
+            if scan:
+                return (scan.id, scan.subscription_name, scan.tenant_id)
+            return None
+        finally:
+            db.close()
+
     def _find_cached_scan(self) -> Optional[Scan]:
         """Return the most recent completed scan for this subscription (if any)."""
-        return (
-            self.db.query(Scan)
-            .filter(
-                Scan.subscription_id == self.subscription_id,
-                Scan.status == "completed",
-                Scan.id != self.scan_id,
+        db = self._new_db()
+        try:
+            result = (
+                db.query(Scan)
+                .filter(
+                    Scan.subscription_id == self.subscription_id,
+                    Scan.status == "completed",
+                    Scan.id != self.scan_id,
+                )
+                .order_by(Scan.completed_at.desc())
+                .first()
             )
-            .order_by(Scan.completed_at.desc())
-            .first()
-        )
+            return result
+        finally:
+            db.close()
 
-    def _copy_collection(self, source: Scan) -> tuple[dict, dict]:
+    def _copy_collection(self, source_id: str) -> tuple[dict, dict]:
         """Copy all nodes/edges/role-defs/role-assignments from source scan into this scan."""
-        db = self.db
+        db = self._new_db()
         target_id = self.scan_id
         node_registry: dict[str, str] = {}
         role_name_map: dict[str, str] = {}
 
-        for n in db.query(Node).filter(Node.scan_id == source.id).all():
+        for n in db.query(Node).filter(Node.scan_id == source_id).all():
             new_n = Node(
                 id=str(uuid.uuid4()),
                 scan_id=target_id,
@@ -369,7 +526,7 @@ class ScanOrchestrator:
             db.add(new_n)
             node_registry[n.node_id] = new_n.id
 
-        for e in db.query(Edge).filter(Edge.scan_id == source.id).all():
+        for e in db.query(Edge).filter(Edge.scan_id == source_id).all():
             db.add(Edge(
                 id=str(uuid.uuid4()),
                 scan_id=target_id,
@@ -379,7 +536,7 @@ class ScanOrchestrator:
                 properties=e.properties,
             ))
 
-        for rd in db.query(RoleDefinition).filter(RoleDefinition.scan_id == source.id).all():
+        for rd in db.query(RoleDefinition).filter(RoleDefinition.scan_id == source_id).all():
             role_name_map[rd.role_id] = rd.name
             db.add(RoleDefinition(
                 id=str(uuid.uuid4()),
@@ -392,7 +549,7 @@ class ScanOrchestrator:
                 privilege_level=rd.privilege_level,
             ))
 
-        for ra in db.query(RoleAssignment).filter(RoleAssignment.scan_id == source.id).all():
+        for ra in db.query(RoleAssignment).filter(RoleAssignment.scan_id == source_id).all():
             db.add(RoleAssignment(
                 id=str(uuid.uuid4()),
                 scan_id=target_id,
@@ -406,12 +563,18 @@ class ScanOrchestrator:
                 scope_level=ra.scope_level,
             ))
 
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
         return node_registry, role_name_map
 
     def _load_rbac_graph_from_db(self) -> tuple[dict, dict]:
         """Reconstruct minimal rbac_data/graph_data dicts from DB for analyzer re-run."""
-        db = self.db
+        db = self._new_db()
         ras = db.query(RoleAssignment).filter(RoleAssignment.scan_id == self.scan_id).all()
         rbac_data = {
             "role_assignments": [
@@ -460,6 +623,7 @@ class ScanOrchestrator:
             "tenant_info": {},
             "app_registrations": [],
         }
+        db.close()
         return rbac_data, graph_data
 
     # ------------------------------------------------------------------
@@ -474,10 +638,17 @@ class ScanOrchestrator:
         role_name_map: dict,
     ):
         from ..analyzers import run_all_analyzers
-        run_all_analyzers(
-            scan_id=self.scan_id,
-            db=self.db,
-            rbac_data=rbac_data,
-            graph_data=graph_data,
-            role_name_map=role_name_map,
-        )
+        db = self._new_db()
+        try:
+            run_all_analyzers(
+                scan_id=self.scan_id,
+                db=db,
+                rbac_data=rbac_data,
+                graph_data=graph_data,
+                role_name_map=role_name_map,
+            )
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()

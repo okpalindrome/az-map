@@ -13,7 +13,7 @@ from .api import scan as scan_api
 from .api import graph_api, findings, export, snapshot, tenant
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 

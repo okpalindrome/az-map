@@ -31,6 +31,7 @@ def main():
         port=8000,
         reload=False,
         log_level="warning",
+        access_log=False,        # suppress per-request HTTP logs
     )
 
 

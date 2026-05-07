@@ -204,14 +204,12 @@ const App = (() => {
       el.classList.toggle('active', el.dataset.id === scanId)
     );
     _showWelcome(false);
-    _showProgress(true, 0, 'Loading graph…', 'load');
+    _setStatus('running', 'Loading…');
     try {
       await _loadGraph(scanId);
-      _showProgress(false);
       _setStatus('done', 'Loaded');
       if (activeView === 'table') TableView.render(scanId);
     } catch (e) {
-      _showProgress(false);
       _setStatus('error', 'Failed to load');
       console.error(e);
     }
@@ -472,15 +470,26 @@ const App = (() => {
     return html;
   }
 
-  // ── Progress overlay ───────────────────────
+  // ── Progress — slim top bar (pip-style) ───────────────────────
   function _showProgress(visible, pct = 0, msg = '', phase = '') {
-    const overlay = document.getElementById('progress-overlay');
-    if (!overlay) return;
-    overlay.classList.toggle('visible', visible);
+    const bar = document.getElementById('top-progress-bar');
+    if (!bar) return;
+
     if (visible) {
-      document.querySelector('.progress-bar-fill').style.width = `${pct}%`;
-      document.getElementById('progress-msg').textContent = msg;
-      document.getElementById('progress-phase').textContent = phase ? `Phase: ${phase}` : '';
+      bar.classList.add('visible');
+      bar.style.width = `${Math.max(pct, 2)}%`;
+      // Show progress in status area instead of blocking the UI
+      const label = phase && phase !== 'done' && phase !== 'error'
+        ? `${phase} — ${msg}`
+        : msg;
+      _setStatus('running', label);
+    } else {
+      // Animate to 100% then fade out
+      bar.style.width = '100%';
+      setTimeout(() => {
+        bar.classList.remove('visible');
+        setTimeout(() => { bar.style.width = '0%'; }, 220);
+      }, 350);
     }
   }
 

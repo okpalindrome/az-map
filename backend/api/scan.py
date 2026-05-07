@@ -98,7 +98,7 @@ async def start_scan(
     db.add(scan)
     db.commit()
 
-    orchestrator = ScanOrchestrator(scan_id, body.subscription_id, db, reuse_collection=body.reuse_collection)
+    orchestrator = ScanOrchestrator(scan_id, body.subscription_id, reuse_collection=body.reuse_collection)
     _active_orchestrators[scan_id] = orchestrator
 
     background_tasks.add_task(_run_scan, orchestrator, scan_id)
@@ -124,21 +124,26 @@ async def stream_progress(scan_id: str, db: Session = Depends(get_db)):
     async def _event_generator() -> AsyncGenerator[str, None]:
         if orchestrator:
             q = orchestrator.subscribe()
-            while True:
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=2.0)
-                    yield f"data: {json.dumps(event)}\n\n"
-                    if event.get("phase") in ("done", "error"):
-                        break
-                except asyncio.TimeoutError:
-                    # Refresh scan status from DB
-                    db.expire_all()
-                    s = db.query(Scan).filter(Scan.id == scan_id).first()
-                    if s and s.status in ("completed", "failed"):
-                        yield f"data: {json.dumps(s.progress or {})}\n\n"
-                        break
-                    # keepalive
-                    yield ": keepalive\n\n"
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(q.get(), timeout=2.0)
+                        yield f"data: {json.dumps(event)}\n\n"
+                        if event.get("phase") in ("done", "error"):
+                            break
+                    except asyncio.TimeoutError:
+                        # Refresh scan status from DB
+                        db.expire_all()
+                        s = db.query(Scan).filter(Scan.id == scan_id).first()
+                        if s and s.status in ("completed", "failed"):
+                            yield f"data: {json.dumps(s.progress or {})}\n\n"
+                            break
+                        # keepalive
+                        yield ": keepalive\n\n"
+            except (asyncio.CancelledError, GeneratorExit):
+                # Browser disconnected — scan continues in background
+                orchestrator.unsubscribe(q)
+                return
         else:
             # Scan already done — send final status
             db.expire_all()
