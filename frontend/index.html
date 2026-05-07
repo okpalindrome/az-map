@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>az-map — Azure Security Analysis</title>
+  <link rel="stylesheet" href="/static/css/main.css">
+  <!-- Cytoscape.js — vendored locally for offline use and to avoid SRI issues -->
+  <script src="/static/js/vendor/cytoscape.min.js"></script>
+</head>
+<body>
+
+<!-- ── Toolbar ───────────────────────────────────────────────── -->
+<div id="toolbar">
+  <div class="logo">az<span>-map</span></div>
+  <div class="toolbar-sep"></div>
+  <input id="sub-input" type="text" placeholder="Subscription ID (e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)" />
+  <button id="btn-scan" class="btn btn-primary">Scan</button>
+  <div class="toolbar-sep"></div>
+  <div class="view-tabs">
+    <button class="view-tab active" data-view="graph">Graph</button>
+    <button class="view-tab" data-view="table">Table</button>
+    <button class="view-tab" data-view="dashboard">Dashboard</button>
+  </div>
+  <div class="toolbar-sep"></div>
+  <button id="btn-refresh" class="btn btn-ghost" title="Refresh graph">↺</button>
+  <button id="btn-fit" class="btn btn-ghost" title="Fit to view">⊡</button>
+  <button id="btn-paths" class="btn btn-ghost" title="Attack path finder">⚡ Paths</button>
+  <button id="btn-diff" class="btn btn-ghost" title="Compare scans (diff)">⇄ Diff</button>
+  <div class="toolbar-sep"></div>
+  <!-- Export -->
+  <button id="btn-export-json" class="btn btn-ghost" title="Export JSON">JSON</button>
+  <button id="btn-export-csv"  class="btn btn-ghost" title="Export CSV">CSV</button>
+  <button id="btn-export-html" class="btn btn-ghost" title="Export HTML Report">Report</button>
+  <button id="btn-export-paths" class="btn btn-ghost" title="Export attack paths JSON">Paths</button>
+  <div style="flex:1;"></div>
+  <div id="scan-status">
+    <div class="status-dot"></div>
+    <span id="status-text">Ready</span>
+  </div>
+</div>
+
+<!-- ── App layout ──────────────────────────────────────────────── -->
+<div id="app">
+
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <!-- Search -->
+    <div class="sidebar-section">
+      <div class="sidebar-label">Search</div>
+      <input id="search-input" type="search" placeholder="Name, ID, type…" />
+    </div>
+
+    <!-- Filters: resource types -->
+    <div class="sidebar-section">
+      <div class="sidebar-label">Resource Types</div>
+      <div class="filter-group">
+        <label><input type="checkbox" class="filter-cb" data-group="type" value="user" checked>
+          <span class="filter-color-dot" style="background:#2563EB;"></span>Users</label>
+        <label><input type="checkbox" class="filter-cb" data-group="type" value="group" checked>
+          <span class="filter-color-dot" style="background:#0891B2;"></span>Groups</label>
+        <label><input type="checkbox" class="filter-cb" data-group="type" value="service_principal" checked>
+          <span class="filter-color-dot" style="background:#EA580C;"></span>Service Principals</label>
+        <label><input type="checkbox" class="filter-cb" data-group="type" value="managed_identity" checked>
+          <span class="filter-color-dot" style="background:#7C3AED;"></span>Managed Identities</label>
+        <label><input type="checkbox" class="filter-cb" data-group="type" value="subscription" checked>
+          <span class="filter-color-dot" style="background:#1D4ED8;"></span>Subscriptions</label>
+        <label><input type="checkbox" class="filter-cb" data-group="type" value="resource_group" checked>
+          <span class="filter-color-dot" style="background:#93C5FD;"></span>Resource Groups</label>
+        <label><input type="checkbox" class="filter-cb" data-group="type" value="storage_account" checked>
+          <span class="filter-color-dot" style="background:#16A34A;"></span>Storage Accounts</label>
+        <label><input type="checkbox" class="filter-cb" data-group="type" value="key_vault" checked>
+          <span class="filter-color-dot" style="background:#F44336;"></span>Key Vaults</label>
+        <label><input type="checkbox" class="filter-cb" data-group="type" value="function_app" checked>
+          <span class="filter-color-dot" style="background:#FF9800;"></span>Function Apps</label>
+        <label><input type="checkbox" class="filter-cb" data-group="type" value="vm" checked>
+          <span class="filter-color-dot" style="background:#475569;"></span>Virtual Machines</label>
+        <label><input type="checkbox" class="filter-cb" data-group="type" value="automation_account" checked>
+          <span class="filter-color-dot" style="background:#9333EA;"></span>Automation Accounts</label>
+        <label><input type="checkbox" class="filter-cb" data-group="type" value="role_definition">
+          <span class="filter-color-dot" style="background:#6B7280;"></span>Role Definitions</label>
+      </div>
+    </div>
+
+    <!-- Filters: risk level -->
+    <div class="sidebar-section">
+      <div class="sidebar-label">Risk Level</div>
+      <div class="filter-group">
+        <label><input type="checkbox" class="filter-cb" data-group="risk" value="critical" checked>
+          <span class="filter-color-dot" style="background:#F44336;"></span>Critical</label>
+        <label><input type="checkbox" class="filter-cb" data-group="risk" value="risky" checked>
+          <span class="filter-color-dot" style="background:#FF9800;"></span>Risky</label>
+        <label><input type="checkbox" class="filter-cb" data-group="risk" value="safe" checked>
+          <span class="filter-color-dot" style="background:#16A34A;"></span>Safe</label>
+      </div>
+    </div>
+
+    <!-- Edge label toggle -->
+    <div class="sidebar-section">
+      <div class="sidebar-label">Display</div>
+      <label style="display:flex; align-items:center; gap:7px; font-size:13px; cursor:pointer;">
+        <input type="checkbox" id="toggle-edge-labels"> Show edge labels
+      </label>
+    </div>
+
+    <!-- Graph stats -->
+    <div class="stats-row" id="graph-stats-row"></div>
+
+    <!-- Findings chips -->
+    <div class="stats-row" id="finding-chips"></div>
+
+    <!-- Divider -->
+    <div style="flex:1;"></div>
+
+    <!-- Tenant config -->
+    <div class="sidebar-section" style="flex-shrink:0;">
+      <div class="sidebar-label" style="display:flex; justify-content:space-between; align-items:center;">
+        Tenants
+        <button id="btn-add-tenant" title="Add tenant" style="background:none; border:none; cursor:pointer; color:var(--accent); font-size:16px; padding:0 2px; line-height:1;">+</button>
+      </div>
+      <div id="tenant-list" style="max-height:120px; overflow-y:auto;"></div>
+    </div>
+
+    <!-- Scan history -->
+    <div class="sidebar-section" style="flex-shrink:0;">
+      <div class="sidebar-label">Scan History</div>
+    </div>
+    <div id="scan-list"></div>
+  </div>
+
+  <!-- Tenant modal -->
+  <div id="tenant-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:400; align-items:center; justify-content:center;">
+    <div style="background:#fff; border-radius:8px; padding:24px; width:min(440px,94vw); box-shadow:0 4px 24px rgba(0,0,0,0.15);">
+      <div style="font-size:16px; font-weight:600; margin-bottom:16px;" id="tenant-modal-title">Add Tenant</div>
+      <input id="t-name" placeholder="Display name *" style="width:100%; padding:8px 10px; border:1px solid #e0e0e0; border-radius:6px; font-size:13px; margin-bottom:8px; box-sizing:border-box;">
+      <input id="t-tenant-id" placeholder="Tenant ID (optional)" style="width:100%; padding:8px 10px; border:1px solid #e0e0e0; border-radius:6px; font-size:13px; margin-bottom:8px; box-sizing:border-box;">
+      <textarea id="t-subs" placeholder="Subscription IDs (one per line)" rows="3" style="width:100%; padding:8px 10px; border:1px solid #e0e0e0; border-radius:6px; font-size:13px; margin-bottom:8px; box-sizing:border-box; resize:vertical; font-family:inherit;"></textarea>
+      <input id="t-notes" placeholder="Notes (optional)" style="width:100%; padding:8px 10px; border:1px solid #e0e0e0; border-radius:6px; font-size:13px; margin-bottom:16px; box-sizing:border-box;">
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button id="btn-tenant-cancel" class="btn btn-ghost">Cancel</button>
+        <button id="btn-tenant-save" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main content -->
+  <div id="main">
+
+    <!-- Welcome state -->
+    <div id="welcome">
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="10" stroke="#e0e0e0" stroke-width="1.5"/>
+        <circle cx="12" cy="12" r="4" stroke="#2563EB" stroke-width="1.5"/>
+        <line x1="12" y1="2" x2="12" y2="8" stroke="#e0e0e0" stroke-width="1.5"/>
+        <line x1="12" y1="16" x2="12" y2="22" stroke="#e0e0e0" stroke-width="1.5"/>
+        <line x1="2" y1="12" x2="8" y2="12" stroke="#e0e0e0" stroke-width="1.5"/>
+        <line x1="16" y1="12" x2="22" y2="12" stroke="#e0e0e0" stroke-width="1.5"/>
+      </svg>
+      <h2>Azure Security Mapper</h2>
+      <p>Enter an Azure Subscription ID above and click <strong>Scan</strong> to map privilege relationships, detect escalation paths, and visualize your Azure attack surface.</p>
+      <p style="font-size:12px; color:#bbb;">Make sure you're logged in via <code style="background:#f5f5f5; padding:2px 5px; border-radius:3px;">az login</code> before scanning.</p>
+    </div>
+
+    <!-- Progress overlay -->
+    <div id="progress-overlay">
+      <div style="font-size:16px; font-weight:600; color:#1a1a1a;">Scanning Azure Environment</div>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-fill" style="width:0%;"></div>
+      </div>
+      <div id="progress-msg">Initializing…</div>
+      <div id="progress-phase"></div>
+    </div>
+
+    <!-- Graph view -->
+    <div id="graph-view" class="active">
+      <div id="cy"></div>
+
+      <!-- Legend -->
+      <div id="legend">
+        <div id="legend-toggle">Legend ▾</div>
+        <div id="legend-body">
+          <div class="legend-item"><div class="legend-dot" style="background:#2563EB;"></div>User</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#0891B2;"></div>Group</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#EA580C;"></div>Service Principal</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#7C3AED;"></div>Managed Identity</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#F44336;"></div>Key Vault</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#16A34A;"></div>Storage Account</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#FF9800;"></div>Function App</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#475569;"></div>VM</div>
+          <div style="margin-top:8px; padding-top:8px; border-top:1px solid #eee;">
+            <div class="legend-item"><div style="width:10px; height:10px; border-radius:2px; background:#F44336; flex-shrink:0;"></div>Critical risk border</div>
+            <div class="legend-item"><div style="width:10px; height:10px; border-radius:2px; background:#FF9800; flex-shrink:0;"></div>Risky border</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Graph controls -->
+      <div id="graph-controls">
+        <button class="graph-btn" id="gc-zoomin"  title="Zoom in">+</button>
+        <button class="graph-btn" id="gc-zoomout" title="Zoom out">−</button>
+        <button class="graph-btn" id="gc-fit"     title="Fit to screen">⊡</button>
+        <button class="graph-btn" id="gc-reset"   title="Re-run layout">⟳</button>
+      </div>
+
+      <!-- Attack path panel -->
+      <div id="attack-path-panel">
+        <div class="path-panel-title">
+          ⚡ Attack Paths
+          <button id="path-panel-close" style="background:none;border:none;cursor:pointer;color:#999;font-size:14px;">✕</button>
+        </div>
+        <input id="path-from" class="path-input" type="text" placeholder="From node (name or ID)…" />
+        <input id="path-to"   class="path-input" type="text" placeholder="To node (optional — leave blank for Owner paths)…" />
+        <div style="display:flex; gap:6px; margin-top:4px;">
+          <button id="btn-find-paths" class="btn btn-primary" style="flex:1; padding:6px;">Find Paths</button>
+          <button id="btn-global-admin-paths" class="btn btn-ghost" style="flex:1; padding:6px; font-size:11px;">→ Global Admin</button>
+        </div>
+        <div id="path-results"></div>
+      </div>
+    </div>
+
+    <!-- Table view -->
+    <div id="table-view">
+      <div class="table-tabs">
+        <button class="table-tab active" data-tab="findings">Findings</button>
+        <button class="table-tab" data-tab="inventory">Inventory</button>
+        <button class="table-tab" data-tab="roles">Roles</button>
+      </div>
+      <div id="table-content"></div>
+    </div>
+
+    <!-- Dashboard view -->
+    <div id="dashboard-view">
+      <div id="dashboard-content"></div>
+    </div>
+
+  </div><!-- /main -->
+
+  <!-- Diff modal -->
+  <div id="diff-panel">
+    <div class="diff-modal">
+      <div class="diff-modal-header">
+        <span class="diff-modal-title">⇄ Compare Scans</span>
+        <button id="diff-close" class="btn btn-ghost" style="padding:4px 10px;">✕ Close</button>
+      </div>
+      <div class="diff-modal-body">
+        <div class="diff-selectors">
+          <select id="diff-scan-a"><option value="">Select baseline scan…</option></select>
+          <span style="color:#999; font-size:18px;">→</span>
+          <select id="diff-scan-b"><option value="">Select current scan…</option></select>
+          <button id="btn-run-diff" class="btn btn-primary">Compare</button>
+        </div>
+        <div id="diff-results"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail panel -->
+  <div id="detail-panel">
+    <div id="detail-header">
+      <div>
+        <div id="detail-title">—</div>
+        <div id="detail-type"></div>
+      </div>
+      <button id="detail-close">✕</button>
+    </div>
+    <div id="detail-body"></div>
+  </div>
+
+</div><!-- /app -->
+
+<!-- Tooltip -->
+<div id="tooltip"></div>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/graph.js"></script>
+<script src="/static/js/table.js"></script>
+<script src="/static/js/dashboard.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>
