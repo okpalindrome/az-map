@@ -1,0 +1,2 @@
+# Development / testing dependencies — not required to run az-map
+pytest>=7.0

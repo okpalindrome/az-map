@@ -1,8 +1,12 @@
-#!/usr/bin/env python3
-"""Entry point for az-map. Run: python run.py"""
+"""Entry point for az-map.  Run: python run.py"""
 import sys
-import subprocess
-from pathlib import Path
+
+
+# Windows requires ProactorEventLoop for asyncio subprocess support.
+# Must be set before any asyncio import or uvicorn startup.
+if sys.platform == "win32":
+    import asyncio
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 
 def check_dependencies():
@@ -31,7 +35,7 @@ def main():
         port=8000,
         reload=False,
         log_level="warning",
-        access_log=False,        # suppress per-request HTTP logs
+        access_log=False,
     )
 
 

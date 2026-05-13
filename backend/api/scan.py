@@ -1,8 +1,10 @@
 """Scan management API: start, status (SSE), list, delete, import."""
 import asyncio
 import json
+import os
 import re
 import shutil
+import sys
 import uuid
 from datetime import datetime
 from typing import AsyncGenerator, Optional
@@ -27,14 +29,47 @@ _UUID_RE = re.compile(
 
 
 def _get_az_cmd() -> str:
-    cmd = shutil.which("az")
-    if cmd:
-        return cmd
-    import os
+    """Locate the az CLI executable, handling platform differences."""
+    if sys.platform == "win32":
+        # On Windows, az ships as az.cmd (a batch script wrapper).
+        # shutil.which respects PATHEXT so it finds .cmd files.
+        for name in ("az.cmd", "az"):
+            found = shutil.which(name)
+            if found:
+                return found
+        # Common Windows installation paths as a last resort
+        for candidate in (
+            r"C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\az.cmd",
+            r"C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd",
+        ):
+            if os.path.isfile(candidate):
+                return candidate
+        return "az.cmd"
+
+    # macOS / Linux
+    found = shutil.which("az")
+    if found:
+        return found
     for candidate in ("/usr/local/bin/az", "/opt/homebrew/bin/az", "/usr/bin/az"):
         if os.path.isfile(candidate):
             return candidate
     return "az"
+
+
+def _az_args(az_cmd: str, *args: str) -> list[str]:
+    """Build the subprocess argument list for az CLI.
+
+    On Windows, .cmd batch scripts cannot be launched directly via CreateProcess
+    — they must be invoked through cmd.exe.
+    """
+    if sys.platform == "win32" and az_cmd.lower().endswith((".cmd", ".bat")):
+        return ["cmd", "/c", az_cmd, *args]
+    return [az_cmd, *args]
+
+
+def _decode(data: bytes) -> str:
+    """Decode subprocess output, stripping UTF-8 BOM if present (common on Windows)."""
+    return data.decode("utf-8-sig", errors="replace").strip()
 
 
 class ScanStartRequest(BaseModel):
@@ -96,13 +131,13 @@ async def list_subscriptions():
     az_cmd = _get_az_cmd()
     try:
         proc = await asyncio.create_subprocess_exec(
-            az_cmd, "account", "list", "--output", "json",
+            *_az_args(az_cmd, "account", "list", "--output", "json"),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
         if proc.returncode == 0 and stdout.strip():
-            subs = json.loads(stdout.decode())
+            subs = json.loads(_decode(stdout))
             return [
                 {
                     "id": s["id"],
@@ -124,14 +159,14 @@ async def get_current_user():
     az_cmd = _get_az_cmd()
     try:
         proc = await asyncio.create_subprocess_exec(
-            az_cmd, "account", "show", "--output", "json",
+            *_az_args(az_cmd, "account", "show", "--output", "json"),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
         if proc.returncode != 0 or not stdout.strip():
             return None
-        account = json.loads(stdout.decode())
+        account = json.loads(_decode(stdout))
         user = account.get("user", {})
         result = {
             "name": user.get("name", ""),
@@ -142,13 +177,13 @@ async def get_current_user():
         }
         if user.get("type") == "user":
             proc2 = await asyncio.create_subprocess_exec(
-                az_cmd, "ad", "signed-in-user", "show", "--query", "id", "-o", "tsv",
+                *_az_args(az_cmd, "ad", "signed-in-user", "show", "--query", "id", "-o", "tsv"),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout2, _ = await asyncio.wait_for(proc2.communicate(), timeout=10)
             if proc2.returncode == 0 and stdout2.strip():
-                result["object_id"] = stdout2.decode().strip()
+                result["object_id"] = _decode(stdout2)
         return result
     except Exception:
         return None

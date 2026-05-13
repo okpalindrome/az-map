@@ -32,5 +32,4 @@ pydantic-settings==2.6.1
 # Async support
 anyio==4.6.2
 
-# Export
-jinja2==3.1.4
+# (jinja2 removed — HTML report export was removed)
