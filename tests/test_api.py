@@ -311,16 +311,20 @@ def test_export_json():
 
 
 def test_export_csv():
+    """The /csv endpoint now returns a multi-sheet Excel workbook (.xlsx)."""
+    import openpyxl, io
     sid = _mk_completed_scan("sub-csv")
     _mk_finding(sid)
     r = client.get(f"/api/export/{sid}/csv")
     assert r.status_code == 200
-    assert "text/csv" in r.headers["content-type"]
-    text = r.text
-    # New multi-section format includes FINDINGS, INVENTORY, ROLE ASSIGNMENTS sections
-    assert "=== FINDINGS ===" in text
-    assert "=== INVENTORY ===" in text
-    assert "=== ROLE ASSIGNMENTS ===" in text
+    assert "spreadsheetml" in r.headers["content-type"]
+    wb = openpyxl.load_workbook(io.BytesIO(r.content))
+    assert "Findings" in wb.sheetnames
+    assert "Inventory" in wb.sheetnames
+    assert "Roles" in wb.sheetnames
+    # Findings sheet has a header row + at least one data row
+    ws = wb["Findings"]
+    assert ws.max_row >= 2
 
 
 def test_export_html_removed():
