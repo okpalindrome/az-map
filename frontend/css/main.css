@@ -153,10 +153,12 @@ body {
   width: var(--sidebar-width);
   border-right: 1px solid var(--border);
   background: var(--bg-secondary);
-  display: flex;
-  flex-direction: column;
+  /* display:block (not flex) so overflow-y:auto actually triggers.
+     A flex column expands to fit its children and never overflows. */
+  display: block;
   flex-shrink: 0;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .sidebar-section {

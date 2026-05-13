@@ -66,17 +66,32 @@ const App = (() => {
   async function _loadSubscriptions() {
     const sel = document.getElementById('sub-select');
     const inp = document.getElementById('sub-input');
+    if (!sel) return;
+
     try {
       const subs = await API.listSubscriptions();
-      if (!sel) return;
-      if (subs.length === 0) {
-        if (sel) sel.style.display = 'none';
+
+      if (!Array.isArray(subs) || subs.length === 0) {
+        sel.style.display = 'none';
         if (inp) inp.style.display = '';
         return;
       }
-      sel.innerHTML = subs.map(s =>
-        `<option value="${_esc(s.id)}"${s.is_default ? ' selected' : ''}>${_esc(s.name)}</option>`
-      ).join('') + `<option value="">— Enter ID manually —</option>`;
+
+      // Build options using DOM properties — avoids any HTML-injection or
+      // encoding issues that arise from injecting raw names into innerHTML.
+      sel.innerHTML = '';
+      subs.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.id || '';
+        opt.textContent = s.name || s.id || '(unnamed)';
+        if (s.is_default) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      const manual = document.createElement('option');
+      manual.value = '';
+      manual.textContent = '— Enter ID manually —';
+      sel.appendChild(manual);
+
       sel.style.display = '';
       if (inp) inp.style.display = 'none';
 
@@ -86,8 +101,9 @@ const App = (() => {
           if (inp) { inp.style.display = ''; inp.focus(); }
         }
       });
-    } catch (_) {
-      if (sel) sel.style.display = 'none';
+    } catch (e) {
+      console.warn('Could not load subscriptions:', e);
+      sel.style.display = 'none';
       if (inp) inp.style.display = '';
     }
   }
@@ -109,8 +125,8 @@ const App = (() => {
 
   // ── Toolbar ────────────────────────────────
   function _bindToolbar() {
-    document.getElementById('btn-scan').addEventListener('click', _startScan);
-    document.getElementById('sub-input').addEventListener('keydown', (e) => {
+    document.getElementById('btn-scan')?.addEventListener('click', _startScan);
+    document.getElementById('sub-input')?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') _startScan();
     });
 
@@ -118,28 +134,25 @@ const App = (() => {
       btn.addEventListener('click', () => switchView(btn.dataset.view));
     });
 
-    document.getElementById('btn-refresh').addEventListener('click', () => {
+    document.getElementById('btn-refresh')?.addEventListener('click', () => {
       if (currentScanId) _loadGraph(currentScanId);
     });
 
     // Export buttons (JSON + CSV only)
     ['json', 'csv'].forEach(fmt => {
-      const btn = document.getElementById(`btn-export-${fmt}`);
-      if (btn) btn.addEventListener('click', () => {
+      document.getElementById(`btn-export-${fmt}`)?.addEventListener('click', () => {
         if (!currentScanId) return;
         window.open(API.exportUrl(currentScanId, fmt), '_blank');
       });
     });
 
-    document.getElementById('gc-zoomin').addEventListener('click', () => GraphView.zoomIn());
-    document.getElementById('gc-zoomout').addEventListener('click', () => GraphView.zoomOut());
-    document.getElementById('gc-fit').addEventListener('click', () => GraphView.fitView());
-    document.getElementById('gc-reset').addEventListener('click', () => GraphView.resetLayout());
-
-    const edgeToggle = document.getElementById('toggle-edge-labels');
-    if (edgeToggle) {
-      edgeToggle.addEventListener('change', (e) => GraphView.toggleEdgeLabels(e.target.checked));
-    }
+    document.getElementById('gc-zoomin')?.addEventListener('click', () => GraphView.zoomIn());
+    document.getElementById('gc-zoomout')?.addEventListener('click', () => GraphView.zoomOut());
+    document.getElementById('gc-fit')?.addEventListener('click', () => GraphView.fitView());
+    document.getElementById('gc-reset')?.addEventListener('click', () => GraphView.resetLayout());
+    document.getElementById('toggle-edge-labels')?.addEventListener('change', (e) =>
+      GraphView.toggleEdgeLabels(e.target.checked)
+    );
   }
 
   // ── Filters ────────────────────────────────
@@ -320,33 +333,48 @@ const App = (() => {
     const list = document.getElementById('owned-list');
     const countEl = document.getElementById('owned-count');
     if (!section || !list) return;
+
+    // Always show the section once a scan is active so users know it exists
+    section.style.display = '';
+
     try {
       const data = await API.getOwnedNodes(scanId);
       const nodes = data.owned_nodes || [];
+
       if (nodes.length === 0) {
-        section.style.display = 'none';
+        if (countEl) countEl.textContent = '';
+        list.innerHTML = '<div style="font-size:11px; color:#bbb; padding:4px 0;">None yet — open a node and click Mark as Owned.</div>';
         return;
       }
-      section.style.display = '';
-      countEl.textContent = nodes.length;
-      list.innerHTML = nodes.map(n => {
-        const label = _esc(n.name || n.node_id);
-        const type = _esc((n.node_type || '').replace(/_/g, ' '));
-        return `<div class="owned-item" data-nodeid="${_esc(n.node_id)}" title="${label}">
-          <div class="owned-item-dot"></div>
-          <span class="owned-item-name">${label}</span>
-          <span class="owned-item-type">${type}</span>
-        </div>`;
-      }).join('');
-      list.querySelectorAll('.owned-item').forEach(item => {
+
+      if (countEl) countEl.textContent = nodes.length;
+      list.innerHTML = '';
+      nodes.forEach(n => {
+        const item = document.createElement('div');
+        item.className = 'owned-item';
+        item.dataset.nodeid = n.node_id;
+        item.title = n.name || n.node_id;
+
+        const dot = document.createElement('div');
+        dot.className = 'owned-item-dot';
+
+        const name = document.createElement('span');
+        name.className = 'owned-item-name';
+        name.textContent = n.name || n.node_id;
+
+        const type = document.createElement('span');
+        type.className = 'owned-item-type';
+        type.textContent = (n.node_type || '').replace(/_/g, ' ');
+
+        item.append(dot, name, type);
         item.addEventListener('click', () => {
-          const nodeId = item.dataset.nodeid;
-          GraphView.highlightNode(nodeId);
-          DetailPanel.show(scanId, nodeId);
+          GraphView.highlightNode(n.node_id);
+          DetailPanel.show(scanId, n.node_id);
         });
+        list.appendChild(item);
       });
     } catch (_) {
-      section.style.display = 'none';
+      list.innerHTML = '<div style="font-size:11px; color:#bbb; padding:4px 0;">Could not load owned nodes.</div>';
     }
   }
 
@@ -741,6 +769,11 @@ const App = (() => {
   function _showWelcome(visible) {
     const el = document.getElementById('welcome');
     if (el) el.style.display = visible ? '' : 'none';
+    // Hide owned section on welcome screen; shown again when a scan loads
+    if (visible) {
+      const owned = document.getElementById('owned-section');
+      if (owned) owned.style.display = 'none';
+    }
   }
 
   function _setStatus(state, msg) {
@@ -1100,7 +1133,9 @@ const Tooltip = (() => {
 
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => App.init());
+document.addEventListener('DOMContentLoaded', () => {
+  App.init().catch(e => console.error('az-map init error:', e));
+});
 
 document.getElementById('detail-close')?.addEventListener('click', () => DetailPanel.close());
 document.getElementById('detail-back')?.addEventListener('click', () => DetailPanel.goBack());
