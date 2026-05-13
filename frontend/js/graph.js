@@ -161,45 +161,58 @@ const GraphView = (() => {
   /**
    * Choose a layout strategy based on node count.
    *
-   * animate is always false — animation drives requestAnimationFrame callbacks
-   * that run on the main thread and cause "page unresponsive" for larger graphs.
-   * numIter is capped to prevent >200 ms layouts.
+   * Rules:
+   * - animate: false always — animation drives rAF callbacks that block the thread.
+   * - randomize: true always — cy.add() places every node at (0,0), so we must
+   *   scatter before the physics simulation or all forces cancel and nothing moves.
+   * - numIter scales down with node count to stay under ~150 ms.
+   * - Layout is skipped when the graph view is hidden; it runs on demand when
+   *   the user switches to the Graph tab (runLayoutIfNeeded).
    */
   function _runLayout() {
     if (!cy) return;
     const count = cy.nodes().length;
     if (count === 0) { _layoutPending = false; return; }
 
-    // If the graph view isn't visible, defer the layout until switchToGraph()
     if (!_isVisible()) { _layoutPending = true; return; }
     _layoutPending = false;
 
     let cfg;
-    if (count <= 60) {
+    if (count <= 80) {
       cfg = {
         name: 'cose', animate: false, fit: true, padding: 40,
-        randomize: false, componentSpacing: 80,
-        nodeRepulsion: () => 450000, edgeElasticity: () => 100,
-        idealEdgeLength: 120, nodeOverlap: 20,
-        numIter: 400, gravity: 80, nestingFactor: 5,
-        initialTemp: 200, coolingFactor: 0.95, minTemp: 1.0,
+        randomize: true,                       // scatter from (0,0) first
+        componentSpacing: 80,
+        nodeRepulsion: () => 450000,
+        edgeElasticity: () => 100,
+        idealEdgeLength: 120,
+        nodeOverlap: 20,
+        numIter: 500,
+        gravity: 80,
+        nestingFactor: 5,
+        initialTemp: 200,
+        coolingFactor: 0.95,
+        minTemp: 1.0,
       };
-    } else if (count <= 250) {
+    } else if (count <= 300) {
       cfg = {
         name: 'cose', animate: false, fit: true, padding: 40,
-        randomize: true, nodeRepulsion: () => 350000,
-        idealEdgeLength: 90, numIter: 150,
+        randomize: true,
+        nodeRepulsion: () => 350000,
+        idealEdgeLength: 90,
+        numIter: 200,
+        gravity: 60,
       };
     } else if (count <= 800) {
-      // For large graphs use a very cheap scatter — visually acceptable,
-      // avoids seconds of blocking computation.
       cfg = {
         name: 'cose', animate: false, fit: true, padding: 40,
-        randomize: true, nodeRepulsion: () => 200000,
-        idealEdgeLength: 60, numIter: 60,
+        randomize: true,
+        nodeRepulsion: () => 200000,
+        idealEdgeLength: 60,
+        numIter: 80,
       };
     } else {
-      // >800 nodes: just fit; the cose algorithm would freeze the browser.
+      // >800 nodes: cose would block for seconds — just scatter and fit.
       cy.fit(undefined, 40);
       return;
     }
