@@ -316,8 +316,11 @@ def test_export_csv():
     r = client.get(f"/api/export/{sid}/csv")
     assert r.status_code == 200
     assert "text/csv" in r.headers["content-type"]
-    lines = r.text.strip().split("\n")
-    assert len(lines) == 2  # header + 1 finding
+    text = r.text
+    # New multi-section format includes FINDINGS, INVENTORY, ROLE ASSIGNMENTS sections
+    assert "=== FINDINGS ===" in text
+    assert "=== INVENTORY ===" in text
+    assert "=== ROLE ASSIGNMENTS ===" in text
 
 
 def test_export_html_removed():

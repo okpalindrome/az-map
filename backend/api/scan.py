@@ -191,12 +191,18 @@ async def import_scan(request: Request, db: Session = Depends(get_db)):
     db.add(scan)
     db.flush()
 
-    for n in body.get("nodes", []):
+    nodes_data = body.get("nodes") or body.get("inventory", [])
+    seen_node_ids = set()
+    for n in nodes_data:
+        nid = n.get("node_id")
+        if not nid or nid in seen_node_ids:
+            continue
+        seen_node_ids.add(nid)
         node = Node(
             scan_id=scan.id,
-            node_id=n["node_id"],
+            node_id=nid,
             node_type=n.get("node_type", "unknown"),
-            name=n.get("name", n["node_id"]),
+            name=n.get("name", nid),
             display_name=n.get("display_name"),
             risk_score=float(n.get("risk_score", 0.0)),
             risk_level=n.get("risk_level", "safe"),

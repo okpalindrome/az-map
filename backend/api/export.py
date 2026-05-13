@@ -2,6 +2,7 @@
 import csv
 import io
 import json
+import re
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -89,40 +90,63 @@ def export_json(scan_id: str, db: Session = Depends(get_db)):
             for ra in ras
         ],
     }
+    safe_name = re.sub(r'[^\w\-]', '_', scan.subscription_name or 'azmap')[:60]
     return Response(
         content=json.dumps(payload, indent=2),
         media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="azmap_{scan_id[:8]}.json"'},
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.json"'},
     )
 
 
 @router.get("/{scan_id}/csv")
 def export_csv(scan_id: str, db: Session = Depends(get_db)):
-    scan, findings, _, _, _ = _load_scan_data(scan_id, db)
+    scan, findings, nodes, edges, ras = _load_scan_data(scan_id, db)
+    sub_name = scan.subscription_name or scan.subscription_id
 
     buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=[
-        "severity", "risk_score", "blast_radius", "finding_type",
-        "title", "affected_node", "why_risky", "remediation", "tags"
-    ])
-    writer.writeheader()
-    for f in sorted(findings, key=lambda x: x.risk_score, reverse=True):
-        writer.writerow({
-            "severity": f.severity,
-            "risk_score": f.risk_score,
-            "blast_radius": f.blast_radius,
-            "finding_type": f.finding_type,
-            "title": f.title,
-            "affected_node": f.affected_node_name or "",
-            "why_risky": f.why_risky or "",
-            "remediation": (f.remediation or "").replace("\n", " "),
-            "tags": ", ".join(f.tags or []),
-        })
+    writer = csv.writer(buf)
 
+    # ── Findings ──
+    writer.writerow(["=== FINDINGS ==="])
+    writer.writerow(["severity", "risk_score", "title", "type", "affected_resource", "affected_resource_id", "blast_radius", "subscription"])
+    for f in sorted(findings, key=lambda x: x.risk_score, reverse=True):
+        writer.writerow([
+            f.severity, f.risk_score, f.title,
+            f.finding_type.replace("_", " "),
+            f.affected_node_name or "",
+            f.affected_node_id or "",
+            f.blast_radius,
+            sub_name,
+        ])
+
+    writer.writerow([])
+    # ── Inventory ──
+    writer.writerow(["=== INVENTORY ==="])
+    writer.writerow(["node_id", "node_type", "name", "display_name", "risk_level", "risk_score", "risk_reasons", "subscription"])
+    for n in sorted(nodes, key=lambda x: x.risk_score, reverse=True):
+        writer.writerow([
+            n.node_id, n.node_type, n.name, n.display_name or "",
+            n.risk_level, n.risk_score,
+            "; ".join((n.risk_reasons or [])[:3]),
+            sub_name,
+        ])
+
+    writer.writerow([])
+    # ── Role Assignments ──
+    writer.writerow(["=== ROLE ASSIGNMENTS ==="])
+    writer.writerow(["principal_name", "principal_type", "principal_id", "role_name", "scope", "scope_level", "subscription"])
+    for ra in ras:
+        writer.writerow([
+            ra.principal_name or "", ra.principal_type or "", ra.principal_id,
+            ra.role_name or "", ra.scope, ra.scope_level or "",
+            sub_name,
+        ])
+
+    safe_name = re.sub(r'[^\w\-]', '_', sub_name)[:60]
     return Response(
         content=buf.getvalue(),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="azmap_findings_{scan_id[:8]}.csv"'},
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}_findings.csv"'},
     )
 
 

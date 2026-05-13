@@ -132,6 +132,15 @@ body {
   50% { opacity: 0.4; }
 }
 
+.graph-spinner {
+  width: 32px; height: 32px;
+  border: 3px solid #e0e0e0;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* ── Layout ───────────────────────────────── */
 #app {
   display: flex;
@@ -147,7 +156,7 @@ body {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .sidebar-section {
@@ -164,7 +173,7 @@ body {
 }
 
 /* Scan history list */
-#scan-list { overflow-y: auto; flex: 1; }
+#scan-list { overflow-y: unset; min-height: 80px; }
 .scan-item {
   padding: 10px 12px;
   cursor: pointer;
@@ -830,6 +839,38 @@ body {
   line-height: 1.5;
 }
 
+/* ── Owned resources list ─────────────────── */
+.owned-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 0;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.1s;
+}
+.owned-item:hover { background: var(--bg-tertiary); padding-left: 4px; }
+.owned-item-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #F59E0B;
+  flex-shrink: 0;
+}
+.owned-item-name {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.owned-item-type {
+  font-size: 10px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 /* ── Path chain detail ────────────────────── */
 #path-chain-detail {
   margin-top: 10px;
@@ -900,13 +941,36 @@ body {
 /* ── Owned node indicator ─────────────────── */
 .stat-chip.owned { background: #FEF3C7; color: #B45309; }
 
-#detail-back:hover { color: var(--text); background: var(--bg-tertiary); border-radius: var(--radius-sm); }
+#detail-back {
+  font-size: 12px !important;
+  padding: 3px 8px !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--text-muted) !important;
+  white-space: nowrap;
+}
+#detail-back:hover { background: var(--bg-tertiary) !important; color: var(--text) !important; }
 
 /* ── Scrollbars ───────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #bbb; }
+
+/* ── Dashboard meta bar ───────────────────── */
+.dash-meta-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 12px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  margin-bottom: 0;
+}
+.dash-meta-item { color: var(--text-muted); }
+.dash-meta-item strong { color: var(--text); }
 
 /* ── Responsive helpers ───────────────────── */
 @media (max-width: 900px) {

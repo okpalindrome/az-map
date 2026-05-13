@@ -121,7 +121,6 @@ const App = (() => {
     document.getElementById('btn-refresh').addEventListener('click', () => {
       if (currentScanId) _loadGraph(currentScanId);
     });
-    document.getElementById('btn-fit').addEventListener('click', () => GraphView.fitView());
 
     // Export buttons (JSON + CSV only)
     ['json', 'csv'].forEach(fmt => {
@@ -293,6 +292,7 @@ const App = (() => {
       await _loadGraph(scanId);
       _setStatus('done', 'Loaded');
       if (activeView === 'table') TableView.render(scanId);
+      _loadOwnedList(scanId);
       // Auto-mark current user as owned if found
       _autoMarkCurrentUser(scanId);
     } catch (e) {
@@ -308,19 +308,76 @@ const App = (() => {
     if (!_currentUser?.object_id) return;
     try {
       await API.setNodeOwned(scanId, _currentUser.object_id, true);
-      GraphView.markOwnedNodes([_currentUser.object_id]);
-    } catch (_) {}
+      GraphView.updateNodeOwned(_currentUser.object_id, true);
+      _loadOwnedList(scanId);
+    } catch (_) {
+      // Node not in this scan (different subscription or no match)
+    }
+  }
+
+  async function _loadOwnedList(scanId) {
+    const section = document.getElementById('owned-section');
+    const list = document.getElementById('owned-list');
+    const countEl = document.getElementById('owned-count');
+    if (!section || !list) return;
+    try {
+      const data = await API.getOwnedNodes(scanId);
+      const nodes = data.owned_nodes || [];
+      if (nodes.length === 0) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = '';
+      countEl.textContent = nodes.length;
+      list.innerHTML = nodes.map(n => {
+        const label = _esc(n.name || n.node_id);
+        const type = _esc((n.node_type || '').replace(/_/g, ' '));
+        return `<div class="owned-item" data-nodeid="${_esc(n.node_id)}" title="${label}">
+          <div class="owned-item-dot"></div>
+          <span class="owned-item-name">${label}</span>
+          <span class="owned-item-type">${type}</span>
+        </div>`;
+      }).join('');
+      list.querySelectorAll('.owned-item').forEach(item => {
+        item.addEventListener('click', () => {
+          const nodeId = item.dataset.nodeid;
+          GraphView.highlightNode(nodeId);
+          DetailPanel.show(scanId, nodeId);
+        });
+      });
+    } catch (_) {
+      section.style.display = 'none';
+    }
+  }
+
+  function refreshOwnedList() {
+    if (currentScanId) _loadOwnedList(currentScanId);
+  }
+
+  function _showGraphLoading(visible, msg = 'Loading graph…') {
+    const el = document.getElementById('graph-loading');
+    if (!el) return;
+    if (visible) {
+      document.getElementById('graph-loading-msg').textContent = msg;
+      el.style.display = 'flex';
+    } else {
+      el.style.display = 'none';
+    }
   }
 
   async function _loadGraph(scanId) {
-    const params = _getFilterParams();
-    const stats = await GraphView.load(scanId, params);
-    _updateStats(stats);
-
+    _showGraphLoading(true, 'Loading graph…');
     try {
-      const summary = await API.getFindingsSummary(scanId);
-      _updateFindingChips(summary.by_severity || {});
-    } catch (_) {}
+      const params = _getFilterParams();
+      const stats = await GraphView.load(scanId, params);
+      _updateStats(stats);
+      try {
+        const summary = await API.getFindingsSummary(scanId);
+        _updateFindingChips(summary.by_severity || {});
+      } catch (_) {}
+    } finally {
+      _showGraphLoading(false);
+    }
   }
 
   // ── Stats / chips ──────────────────────────
@@ -444,7 +501,7 @@ const App = (() => {
       const tgt = p.target_name || steps[steps.length - 1]?.display_name || steps[steps.length - 1]?.name || (p.target || '').split('/').pop() || p.target || '';
       const hops = p.length ?? p.hops ?? (steps.length - 1);
       return `<div class="path-result-item" data-idx="${i}">
-        <span class="path-hops">${hops}h</span>
+        <span class="path-hops">${hops} ${hops === 1 ? 'hop' : 'hops'}</span>
         <strong>${_esc(src)}</strong>
         <span style="color:#999;"> → </span>
         <span>${_esc(tgt)}</span>
@@ -464,8 +521,14 @@ const App = (() => {
         el.classList.add('active');
         const p = paths[i];
         const steps = _pathSteps(p);
-        GraphView.highlightPath(steps.map(s => s.node_id).filter(Boolean));
+        const nodeIds = steps.map(s => s.node_id).filter(Boolean);
+        GraphView.highlightPath(nodeIds);
         _showPathChain(p, steps);
+        // Open detail panel for the TARGET node
+        const targetStep = steps[steps.length - 1];
+        if (targetStep?.node_id && currentScanId) {
+          DetailPanel.show(currentScanId, targetStep.node_id);
+        }
       });
     });
   }
@@ -788,7 +851,7 @@ const App = (() => {
     return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  return { init, switchView };
+  return { init, switchView, refreshOwnedList };
 })();
 
 
@@ -820,7 +883,10 @@ const DetailPanel = (() => {
       // Bind owned toggle
       const ownedBtn = body.querySelector('#btn-toggle-owned');
       if (ownedBtn) {
+        let _ownedProcessing = false;
         ownedBtn.addEventListener('click', async () => {
+          if (_ownedProcessing) return;
+          _ownedProcessing = true;
           const newState = !node.is_owned;
           try {
             await API.setNodeOwned(scanId, nodeId, newState);
@@ -831,11 +897,12 @@ const DetailPanel = (() => {
             ownedBtn.style.color = newState ? '#B45309' : '';
             document.getElementById('detail-type').textContent =
               node.node_type.replace(/_/g, ' ') + (newState ? ' · ♦ Owned' : '');
-            GraphView.markOwnedNodes(
-              newState ? [nodeId] : []
-            );
+            GraphView.updateNodeOwned(nodeId, newState);
+            App.refreshOwnedList();
           } catch (e) {
             alert('Error: ' + e.message);
+          } finally {
+            _ownedProcessing = false;
           }
         });
       }

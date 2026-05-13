@@ -198,10 +198,6 @@ const GraphView = (() => {
 
   function markOwnedNodes(nodeIds) {
     if (!cy) return;
-    cy.nodes().removeClass('owned').forEach(n => {
-      n.data('isOwned', false);
-      n.data('borderColor', n.data('_origBorderColor') || n.data('borderColor'));
-    });
     nodeIds.forEach(nid => {
       const n = cy.getElementById(nid);
       if (n.length) {
@@ -209,6 +205,23 @@ const GraphView = (() => {
         n.data('isOwned', true);
       }
     });
+  }
+
+  function updateNodeOwned(nodeId, owned) {
+    if (!cy) return;
+    const n = cy.getElementById(nodeId);
+    if (!n.length) return;
+    n.data('isOwned', owned);
+    if (owned) {
+      n.addClass('owned');
+    } else {
+      n.removeClass('owned');
+      const riskLevel = n.data('riskLevel') || 'safe';
+      const borderColors = { critical: '#F44336', risky: '#FF9800', safe: '#9E9E9E' };
+      const borderWidths = { critical: 3, risky: 2, safe: 1 };
+      n.data('borderColor', borderColors[riskLevel] || '#9E9E9E');
+      n.data('borderWidth', borderWidths[riskLevel] || 1);
+    }
   }
 
   function _runLayout() {
@@ -338,5 +351,5 @@ const GraphView = (() => {
 
   return { init, load, fitView, zoomIn, zoomOut, resetLayout, highlightNode,
            toggleEdgeLabels, highlightPath, applyDiffOverlay, clearDiffOverlay,
-           markOwnedNodes };
+           markOwnedNodes, updateNodeOwned };
 })();

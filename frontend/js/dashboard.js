@@ -35,8 +35,23 @@ const DashboardView = (() => {
       : 0;
     const totalRAs = stats.total_role_assignments || 0;
 
+    const scanDate = stats.completed_at
+      ? new Date(stats.completed_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+      : (stats.started_at ? new Date(stats.started_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—');
+
+    const metaHtml = `
+    <div class="dash-meta-bar">
+      ${stats.snapshot_label ? `<span class="dash-meta-item"><strong>Snapshot:</strong> ${_esc(stats.snapshot_label)}</span>` : ''}
+      <span class="dash-meta-item"><strong>Subscription:</strong> ${_esc(stats.subscription_name || stats.subscription_id || '—')}</span>
+      ${stats.tenant_id ? `<span class="dash-meta-item"><strong>Tenant:</strong> ${_esc(stats.tenant_id)}</span>` : ''}
+      <span class="dash-meta-item"><strong>Scanned:</strong> ${scanDate}</span>
+      <span class="dash-meta-item"><strong>Status:</strong> ${_esc(stats.status || '—')}</span>
+    </div>`;
+
     return `
     <div class="dash-grid">
+
+      ${metaHtml}
 
       <!-- ── Stat cards ── -->
       <div class="dash-row">

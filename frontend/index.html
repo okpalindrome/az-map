@@ -37,7 +37,6 @@
   </div>
   <div class="toolbar-sep"></div>
   <button id="btn-refresh" class="btn btn-ghost" title="Refresh graph">↺</button>
-  <button id="btn-fit" class="btn btn-ghost" title="Fit to view">⊡</button>
   <button id="btn-paths" class="btn btn-ghost" title="Attack path finder">⚡ Paths</button>
   <button id="btn-diff" class="btn btn-ghost" title="Compare scans (diff)">⇄ Diff</button>
   <div class="toolbar-sep"></div>
@@ -122,8 +121,17 @@
     <!-- Findings chips -->
     <div class="stats-row" id="finding-chips"></div>
 
+    <!-- Owned resources -->
+    <div class="sidebar-section" id="owned-section" style="display:none;">
+      <div class="sidebar-label" style="display:flex; justify-content:space-between; align-items:center;">
+        <span>♦ Owned</span>
+        <span id="owned-count" style="font-size:10px; background:#FEF3C7; color:#B45309; border-radius:8px; padding:1px 6px; font-weight:700;"></span>
+      </div>
+      <div id="owned-list"></div>
+    </div>
+
     <!-- Divider -->
-    <div style="flex:1;"></div>
+    <div style="min-height:16px;"></div>
 
     <!-- Tenant config -->
     <div class="sidebar-section" style="flex-shrink:0;">
@@ -176,6 +184,10 @@
 
     <!-- Graph view -->
     <div id="graph-view" class="active">
+      <div id="graph-loading" style="display:none; position:absolute; inset:0; background:rgba(255,255,255,0.88); z-index:50; align-items:center; justify-content:center; flex-direction:column; gap:10px;">
+        <div class="graph-spinner"></div>
+        <span id="graph-loading-msg" style="font-size:12px; color:#666;">Loading graph…</span>
+      </div>
       <div id="cy"></div>
 
       <!-- Legend -->
