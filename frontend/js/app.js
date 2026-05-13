@@ -184,13 +184,16 @@ const App = (() => {
     };
   }
 
+  let _filterSerial = 0;
   async function _applyFilters() {
     if (!currentScanId) return;
+    const serial = ++_filterSerial;
     const params = _getFilterParams();
     try {
       const stats = await GraphView.load(currentScanId, params);
+      if (serial !== _filterSerial) return; // superseded by a later filter change
       _updateStats(stats);
-      if (activeView === 'table') TableView.render(currentScanId);
+      if (activeView === 'table') setTimeout(() => TableView.render(currentScanId), 0);
     } catch (e) {
       console.error('Filter error:', e);
     }
@@ -263,33 +266,29 @@ const App = (() => {
       }
       list.innerHTML = scans.map(s => {
         const isImported = (s.snapshot_label || '').startsWith('Imported:');
+        const statusColor = s.status === 'completed' ? '#4CAF50' : s.status === 'failed' ? '#F44336' : '#7B68EE';
         return `
-        <div class="scan-item ${s.scan_id === currentScanId ? 'active' : ''}"
-             data-id="${s.scan_id}">
-          <div style="display:flex; align-items:baseline; gap:4px;">
+        <div class="scan-item ${s.scan_id === currentScanId ? 'active' : ''}" data-id="${s.scan_id}">
+          <div style="display:flex; align-items:center; gap:4px;">
             <div class="scan-item-name" style="flex:1;">
               ${isImported ? '<span style="color:#7B68EE; font-size:10px;">↓</span> ' : ''}${_esc(s.snapshot_label || s.subscription_name || s.subscription_id)}
             </div>
-            ${s.status === 'completed' && !isImported
-              ? `<button class="scan-label-btn" data-id="${s.scan_id}" data-label="${_esc(s.snapshot_label||'')}"
-                   title="Edit label" style="background:none;border:none;cursor:pointer;color:#ccc;font-size:11px;padding:0;flex-shrink:0;">✎</button>`
-              : ''}
+            <button class="scan-del-btn" data-id="${s.scan_id}" title="Delete" aria-label="Delete scan">✕</button>
           </div>
           <div class="scan-item-meta">
             ${_fmtDate(s.started_at)} &nbsp;
-            <span style="color:${s.status === 'completed' ? '#4CAF50' : s.status === 'failed' ? '#F44336' : '#7B68EE'};">
-              ${s.status}
-            </span>
+            <span style="color:${statusColor};">${s.status}</span>
           </div>
         </div>`;
       }).join('');
+
       list.querySelectorAll('.scan-item').forEach(item => {
         item.addEventListener('click', () => _selectScan(item.dataset.id));
       });
-      list.querySelectorAll('.scan-label-btn').forEach(btn => {
+      list.querySelectorAll('.scan-del-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
-          _editSnapshotLabel(btn.dataset.id, btn.dataset.label);
+          _deleteScan(btn.dataset.id);
         });
       });
     } catch (e) {
@@ -297,7 +296,32 @@ const App = (() => {
     }
   }
 
+  async function _deleteScan(scanId) {
+    if (!confirm('Delete this scan and all its data?')) return;
+    try {
+      await API.deleteScan(scanId);
+      if (currentScanId === scanId) {
+        currentScanId = null;
+        _showWelcome(true);
+        _setStatus('', 'Ready');
+        document.getElementById('graph-stats-row').innerHTML = '';
+        document.getElementById('finding-chips').innerHTML = '';
+        const ownedSection = document.getElementById('owned-section');
+        if (ownedSection) ownedSection.style.display = 'none';
+      }
+      await _loadScanList();
+    } catch (e) {
+      alert('Could not delete scan: ' + e.message);
+    }
+  }
+
+  // Serial counter — only the latest _selectScan call commits results to the UI.
+  // Rapid scan-history clicks would otherwise stack concurrent graph loads,
+  // table/dashboard renders, and owned-list fetches, blocking the main thread.
+  let _selectSerial = 0;
+
   async function _selectScan(scanId) {
+    const serial = ++_selectSerial;
     currentScanId = scanId;
     document.querySelectorAll('.scan-item').forEach(el =>
       el.classList.toggle('active', el.dataset.id === scanId)
@@ -306,13 +330,14 @@ const App = (() => {
     _setStatus('running', 'Loading…');
     try {
       await _loadGraph(scanId);
+      if (serial !== _selectSerial) return; // superseded by a later click
       _setStatus('done', 'Loaded');
       if (activeView === 'table') TableView.render(scanId);
       else if (activeView === 'dashboard') DashboardView.render(scanId);
       _loadOwnedList(scanId);
-      // Auto-mark current user as owned if found
       _autoMarkCurrentUser(scanId);
     } catch (e) {
+      if (serial !== _selectSerial) return;
       _setStatus('error', 'Failed to load');
       console.error(e);
     }
@@ -458,12 +483,14 @@ const App = (() => {
     if (pathPanel && view !== 'graph') pathPanel.classList.remove('visible');
 
     if (view === 'graph') {
-      // Run layout now if a load happened while the graph was hidden
       GraphView.runLayoutIfNeeded();
     } else if (view === 'table' && currentScanId) {
-      TableView.render(currentScanId);
+      // Defer so the tab CSS update paints before JS work begins —
+      // otherwise the browser can't render the tab as "active" until after
+      // the render completes, making the click feel unresponsive.
+      setTimeout(() => TableView.render(currentScanId), 0);
     } else if (view === 'dashboard' && currentScanId) {
-      DashboardView.render(currentScanId);
+      setTimeout(() => DashboardView.render(currentScanId), 0);
     }
   }
 
@@ -878,13 +905,6 @@ const App = (() => {
     } catch (e) {
       alert('Error: ' + e.message);
     }
-  }
-
-  async function _editSnapshotLabel(scanId, currentLabel) {
-    const newLabel = prompt('Snapshot label:', currentLabel || '');
-    if (newLabel === null) return;
-    await API.setSnapshotLabel(scanId, newLabel.trim() || scanId.substring(0, 8));
-    await _loadScanList();
   }
 
   function _fmtDate(iso) {

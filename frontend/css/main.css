@@ -184,8 +184,17 @@ body {
 }
 .scan-item:hover { background: var(--bg-tertiary); }
 .scan-item.active { background: #f4f4f5; border-left: 3px solid var(--accent); }
-.scan-item-name { font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scan-item-name { font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
 .scan-item-meta { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+
+.scan-del-btn {
+  background: none; border: none; cursor: pointer;
+  color: transparent; font-size: 11px; padding: 0 2px;
+  flex-shrink: 0; line-height: 1;
+  transition: color 0.1s;
+}
+.scan-item:hover .scan-del-btn { color: var(--text-faint); }
+.scan-del-btn:hover { color: var(--critical) !important; }
 
 /* Filter section */
 .filter-group { margin-bottom: 10px; }
