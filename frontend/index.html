@@ -31,9 +31,9 @@
   <button id="btn-scan" class="btn btn-primary">Scan</button>
   <div class="toolbar-sep"></div>
   <div class="view-tabs">
-    <button class="view-tab active" data-view="graph">Graph</button>
+    <button class="view-tab active" data-view="dashboard">Dashboard</button>
     <button class="view-tab" data-view="table">Table</button>
-    <button class="view-tab" data-view="dashboard">Dashboard</button>
+    <button class="view-tab" data-view="graph">Graph</button>
   </div>
   <div class="toolbar-sep"></div>
   <button id="btn-refresh" class="btn btn-ghost" title="Refresh graph">↺</button>
@@ -183,7 +183,7 @@
     </div>
 
     <!-- Graph view -->
-    <div id="graph-view" class="active">
+    <div id="graph-view">
       <div id="graph-loading" style="display:none; position:absolute; inset:0; background:rgba(255,255,255,0.88); z-index:50; align-items:center; justify-content:center; flex-direction:column; gap:10px;">
         <div class="graph-spinner"></div>
         <span id="graph-loading-msg" style="font-size:12px; color:#666;">Loading graph…</span>
@@ -252,7 +252,7 @@
     </div>
 
     <!-- Dashboard view -->
-    <div id="dashboard-view">
+    <div id="dashboard-view" class="active">
       <div id="dashboard-content"></div>
     </div>
 

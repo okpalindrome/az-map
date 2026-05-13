@@ -3,7 +3,7 @@
  */
 const App = (() => {
   let currentScanId = null;
-  let activeView = 'graph';
+  let activeView = 'dashboard';
   let _currentUser = null;
 
   async function init() {
@@ -18,6 +18,9 @@ const App = (() => {
     _bindImport();
     await Promise.all([_loadScanList(), _loadTenantList(), _loadSubscriptions()]);
     _showWelcome(true);
+    // Hide graph-only controls on initial load (default view is dashboard)
+    document.getElementById('graph-controls')?.style && (document.getElementById('graph-controls').style.display = 'none');
+    document.getElementById('legend')?.style && (document.getElementById('legend').style.display = 'none');
     // Detect current az user in background
     API.getCurrentUser().then(u => { _currentUser = u; }).catch(() => {});
   }
@@ -158,13 +161,13 @@ const App = (() => {
   // ── Filters ────────────────────────────────
   function _bindFilters() {
     const debounce = (fn, ms) => { let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; };
+    // 600 ms debounce — enough time for the user to finish typing/clicking
+    // before we hit the API and re-render the graph
+    const debouncedApply = debounce(() => { if (currentScanId) _applyFilters(); }, 600);
 
-    document.getElementById('search-input').addEventListener('input',
-      debounce(() => { if (currentScanId) _applyFilters(); }, 400)
-    );
-
+    document.getElementById('search-input')?.addEventListener('input', debouncedApply);
     document.querySelectorAll('.filter-cb').forEach(cb => {
-      cb.addEventListener('change', () => { if (currentScanId) _applyFilters(); });
+      cb.addEventListener('change', debouncedApply);
     });
   }
 
@@ -305,6 +308,7 @@ const App = (() => {
       await _loadGraph(scanId);
       _setStatus('done', 'Loaded');
       if (activeView === 'table') TableView.render(scanId);
+      else if (activeView === 'dashboard') DashboardView.render(scanId);
       _loadOwnedList(scanId);
       // Auto-mark current user as owned if found
       _autoMarkCurrentUser(scanId);
@@ -393,18 +397,24 @@ const App = (() => {
     }
   }
 
+  // Serial counter — ensures rapid scan switches don't show stale loading states
+  let _graphLoadSerial = 0;
+
   async function _loadGraph(scanId) {
+    const serial = ++_graphLoadSerial;
     _showGraphLoading(true, 'Loading graph…');
     try {
       const params = _getFilterParams();
       const stats = await GraphView.load(scanId, params);
+      if (serial !== _graphLoadSerial) return; // superseded by a later load
       _updateStats(stats);
       try {
         const summary = await API.getFindingsSummary(scanId);
+        if (serial !== _graphLoadSerial) return;
         _updateFindingChips(summary.by_severity || {});
       } catch (_) {}
     } finally {
-      _showGraphLoading(false);
+      if (serial === _graphLoadSerial) _showGraphLoading(false);
     }
   }
 
@@ -447,7 +457,10 @@ const App = (() => {
     if (legend) legend.style.display = view === 'graph' ? '' : 'none';
     if (pathPanel && view !== 'graph') pathPanel.classList.remove('visible');
 
-    if (view === 'table' && currentScanId) {
+    if (view === 'graph') {
+      // Run layout now if a load happened while the graph was hidden
+      GraphView.runLayoutIfNeeded();
+    } else if (view === 'table' && currentScanId) {
       TableView.render(currentScanId);
     } else if (view === 'dashboard' && currentScanId) {
       DashboardView.render(currentScanId);

@@ -183,8 +183,31 @@ const TableView = (() => {
       (sorted by risk score)
     </div>`;
 
-    const rows = nodes.map(n => `
-      <tr class="inventory-row" data-nodeid="${_esc(n.node_id)}" style="cursor:pointer;">
+    const hasMore = offset + nodes.length < total;
+
+    // Build table shell first (one innerHTML), then fill tbody via DocumentFragment
+    // so the browser does a single reflow for all rows rather than N.
+    container.innerHTML = header + `
+      <table class="data-table">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Risk Level</th><th>Risk Score</th><th>Risk Reasons</th></tr>
+        </thead>
+        <tbody id="inv-tbody"></tbody>
+      </table>` + (hasMore
+        ? `<div style="padding:12px 16px; text-align:center; border-top:1px solid #eee;">
+             <button id="inv-load-more" class="btn btn-ghost" style="font-size:12px;">
+               Load next ${_inventoryLimit} (${total - offset - nodes.length} remaining)
+             </button>
+           </div>`
+        : '');
+
+    const frag = document.createDocumentFragment();
+    nodes.forEach(n => {
+      const tr = document.createElement('tr');
+      tr.className = 'inventory-row';
+      tr.dataset.nodeid = n.node_id;
+      tr.style.cursor = 'pointer';
+      tr.innerHTML = `
         <td style="font-weight:500;">${_esc(n.display_name || n.name)}</td>
         <td><span class="node-type-tag">${(n.node_type || '').replace(/_/g, ' ')}</span></td>
         <td><span class="severity-badge ${n.risk_level === 'safe' ? 'low' : n.risk_level}">${n.risk_level}</span></td>
@@ -194,36 +217,14 @@ const TableView = (() => {
             <span style="font-size:11px; color:#666;">${n.risk_score}</span>
           </div>
         </td>
-        <td style="font-size:12px; color:#666;">${(n.risk_reasons || []).slice(0, 2).join(', ') || '—'}</td>
-      </tr>`).join('');
-
-    const hasMore = offset + nodes.length < total;
-    const pagination = hasMore
-      ? `<div style="padding:12px 16px; text-align:center; border-top:1px solid #eee;">
-           <button id="inv-load-more" class="btn btn-ghost" style="font-size:12px;">
-             Load next ${_inventoryLimit} (${total - offset - nodes.length} remaining)
-           </button>
-         </div>`
-      : '';
-
-    container.innerHTML = header + `
-      <table class="data-table">
-        <thead>
-          <tr><th>Name</th><th>Type</th><th>Risk Level</th><th>Risk Score</th><th>Risk Reasons</th></tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>` + pagination;
-
-    container.querySelectorAll('.inventory-row').forEach(row => {
-      row.addEventListener('click', () => {
-        const nodeId = row.dataset.nodeid;
+        <td style="font-size:12px; color:#666;">${(n.risk_reasons || []).slice(0, 2).join(', ') || '—'}</td>`;
+      tr.addEventListener('click', () => {
         App.switchView('graph');
-        setTimeout(() => {
-          GraphView.highlightNode(nodeId);
-          DetailPanel.show(scanId, nodeId);
-        }, 100);
+        setTimeout(() => { GraphView.highlightNode(n.node_id); DetailPanel.show(scanId, n.node_id); }, 50);
       });
+      frag.appendChild(tr);
     });
+    document.getElementById('inv-tbody').appendChild(frag);
 
     document.getElementById('inv-load-more')?.addEventListener('click', () => {
       _renderInventory(container, scanId, offset + _inventoryLimit);
@@ -241,6 +242,7 @@ const TableView = (() => {
       return;
     }
 
+    // n.nodeLabel is the current data key (renamed from n.label)
     const html = `
       <div style="margin-bottom:16px; padding:12px 16px; background:#f8f8f8; border-radius:6px;">
         <strong>Total Role Assignments:</strong> ${stats.total_role_assignments || 0} &nbsp;|&nbsp;
@@ -253,7 +255,7 @@ const TableView = (() => {
         <tbody>
           ${nodes.map(n => `
           <tr>
-            <td style="font-weight:500;">${_esc(n.fullLabel || n.label)}</td>
+            <td style="font-weight:500;">${_esc(n.fullLabel || n.nodeLabel || n.name || '')}</td>
             <td style="font-size:12px; color:#666;">${n.properties?.is_builtin ? 'Yes' : 'Custom'}</td>
             <td><span class="severity-badge ${_privLevel(n.properties?.privilege_level)}">${n.properties?.privilege_level || 'low'}</span></td>
           </tr>`).join('')}

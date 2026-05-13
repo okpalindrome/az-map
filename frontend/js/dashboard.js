@@ -39,13 +39,19 @@ const DashboardView = (() => {
       ? new Date(stats.completed_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
       : (stats.started_at ? new Date(stats.started_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 
+    // Determine whether this is an imported or live-scanned result
+    const isImported = (stats.snapshot_label || '').startsWith('Imported:');
+    const scanType = isImported ? 'Imported' : 'Scanned';
+    const scanTypeColor = isImported ? '#7B68EE' : '#4CAF50';
+
     const metaHtml = `
     <div class="dash-meta-bar">
-      ${stats.snapshot_label ? `<span class="dash-meta-item"><strong>Snapshot:</strong> ${_esc(stats.snapshot_label)}</span>` : ''}
+      <span class="dash-meta-item">
+        <strong style="color:${scanTypeColor};">⬤</strong>&nbsp;${scanType}
+      </span>
       <span class="dash-meta-item"><strong>Subscription:</strong> ${_esc(stats.subscription_name || stats.subscription_id || '—')}</span>
       ${stats.tenant_id ? `<span class="dash-meta-item"><strong>Tenant:</strong> ${_esc(stats.tenant_id)}</span>` : ''}
-      <span class="dash-meta-item"><strong>Scanned:</strong> ${scanDate}</span>
-      <span class="dash-meta-item"><strong>Status:</strong> ${_esc(stats.status || '—')}</span>
+      <span class="dash-meta-item"><strong>Date:</strong> ${scanDate}</span>
     </div>`;
 
     return `

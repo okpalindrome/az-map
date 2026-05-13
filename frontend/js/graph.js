@@ -1,9 +1,22 @@
 /**
  * Graph view — Cytoscape.js with Obsidian-style force layout.
+ *
+ * Performance contract
+ * --------------------
+ * - cy.batch() wraps every operation that touches >1 element so Cytoscape
+ *   fires a single redraw instead of N individual redraws.
+ * - Layout is NEVER animated (animation drives per-frame callbacks that block
+ *   the main thread).  numIter is capped by node count.
+ * - Layout is skipped entirely when the graph canvas is not the active view;
+ *   it runs on demand when the user switches to the Graph tab.
+ * - A serial-load counter lets callers detect stale (superseded) loads and
+ *   discard their results before touching the DOM.
  */
 const GraphView = (() => {
   let cy = null;
   let currentScanId = null;
+  let _layoutPending = false;   // true when elements loaded but layout not yet run
+  let _loadSerial = 0;          // incremented on every load(); stale calls bail out
 
   const EDGE_COLORS = {
     has_role: '#18181B',
@@ -39,46 +52,22 @@ const GraphView = (() => {
             'border-color': 'data(borderColor)',
             'shape': 'data(shape)',
             'overlay-opacity': 0,
-            'transition-property': 'background-color, border-color, opacity',
-            'transition-duration': '0.15s',
+            // No CSS transitions — they force style recalculations on every frame
           }
         },
-        {
-          selector: 'node:selected',
-          style: {
-            'border-width': 3,
-            'border-color': '#18181B',
-            'background-color': 'data(color)',
-            'z-index': 10,
-          }
-        },
-        {
-          selector: 'node.highlighted',
-          style: {
-            'opacity': 1,
-            'z-index': 9,
-          }
-        },
-        {
-          selector: 'node.faded',
-          style: { 'opacity': 0.2 }
-        },
+        { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#18181B', 'z-index': 10 } },
+        { selector: 'node.highlighted', style: { 'opacity': 1, 'z-index': 9 } },
+        { selector: 'node.faded',       style: { 'opacity': 0.15 } },
         {
           selector: 'node.owned',
-          style: {
-            'border-color': '#F59E0B',
-            'border-width': 4,
-            'overlay-color': '#F59E0B',
-            'overlay-padding': 5,
-            'overlay-opacity': 0.12,
-          }
+          style: { 'border-color': '#F59E0B', 'border-width': 4, 'overlay-color': '#F59E0B', 'overlay-padding': 5, 'overlay-opacity': 0.12 }
         },
         {
           selector: 'edge',
           style: {
             'width': 1.5,
-            'line-color': (ele) => EDGE_COLORS[ele.data('edgeType')] || EDGE_COLORS.default,
-            'target-arrow-color': (ele) => EDGE_COLORS[ele.data('edgeType')] || EDGE_COLORS.default,
+            'line-color':          (ele) => EDGE_COLORS[ele.data('edgeType')] || EDGE_COLORS.default,
+            'target-arrow-color':  (ele) => EDGE_COLORS[ele.data('edgeType')] || EDGE_COLORS.default,
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
             'opacity': 0.6,
@@ -91,37 +80,20 @@ const GraphView = (() => {
             'overlay-opacity': 0,
           }
         },
-        {
-          selector: 'edge:selected',
-          style: { 'opacity': 1, 'width': 2.5 }
-        },
-        {
-          selector: 'edge.highlighted',
-          style: { 'opacity': 1, 'width': 2 }
-        },
-        {
-          selector: 'edge.faded',
-          style: { 'opacity': 0.05 }
-        },
-        {
-          selector: 'node[riskLevel = "critical"]',
-          style: {
-            'border-width': 3,
-            'border-color': '#F44336',
-          }
-        },
-        {
-          selector: 'node[riskLevel = "risky"]',
-          style: {
-            'border-width': 2,
-            'border-color': '#FF9800',
-          }
-        },
+        { selector: 'edge:selected',    style: { 'opacity': 1, 'width': 2.5 } },
+        { selector: 'edge.highlighted', style: { 'opacity': 1, 'width': 2 } },
+        { selector: 'edge.faded',       style: { 'opacity': 0.04 } },
+        { selector: 'node[riskLevel = "critical"]', style: { 'border-width': 3, 'border-color': '#F44336' } },
+        { selector: 'node[riskLevel = "risky"]',    style: { 'border-width': 2, 'border-color': '#FF9800' } },
       ],
-
       layout: { name: 'preset' },
       minZoom: 0.1,
       maxZoom: 4,
+      // Throttle rendering: skip frames when updates are cheap
+      styleEnabled: true,
+      hideEdgesOnViewport: true,   // skip edge rendering during pan/zoom
+      textureOnViewport: true,     // use texture during motion (lower GPU pressure)
+      motionBlur: false,
     });
 
     cy.on('tap', 'node', (evt) => {
@@ -138,8 +110,8 @@ const GraphView = (() => {
         props.role_name ? `Role: ${props.role_name}` : null,
         props.scope ? `Scope: ${_shortenScope(props.scope)}` : null,
       ].filter(Boolean).join('\n');
-      Tooltip.show(msg, evt.renderedPosition.x + cy.container().getBoundingClientRect().left,
-                   evt.renderedPosition.y + cy.container().getBoundingClientRect().top);
+      const rect = cy.container().getBoundingClientRect();
+      Tooltip.show(msg, evt.renderedPosition.x + rect.left, evt.renderedPosition.y + rect.top);
     });
 
     cy.on('tap', (evt) => {
@@ -162,15 +134,23 @@ const GraphView = (() => {
     cy.on('mouseout', 'node', () => Tooltip.hide());
   }
 
+  // ── Internal helpers ────────────────────────────────────────────────────────
+
+  function _isVisible() {
+    return document.getElementById('graph-view')?.classList.contains('active') ?? false;
+  }
+
   function _highlightNeighborhood(node) {
-    const neighborhood = node.closedNeighborhood();
-    cy.elements().addClass('faded');
-    neighborhood.removeClass('faded').addClass('highlighted');
-    neighborhood.edges().addClass('highlighted');
+    const nbhd = node.closedNeighborhood();
+    cy.batch(() => {
+      cy.elements().addClass('faded');
+      nbhd.removeClass('faded').addClass('highlighted');
+      nbhd.edges().addClass('highlighted');
+    });
   }
 
   function _clearHighlight() {
-    cy.elements().removeClass('faded highlighted');
+    cy.batch(() => cy.elements().removeClass('faded highlighted'));
   }
 
   function _shortenScope(scope) {
@@ -178,92 +158,91 @@ const GraphView = (() => {
     return parts.length > 5 ? '…/' + parts.slice(-2).join('/') : scope;
   }
 
+  /**
+   * Choose a layout strategy based on node count.
+   *
+   * animate is always false — animation drives requestAnimationFrame callbacks
+   * that run on the main thread and cause "page unresponsive" for larger graphs.
+   * numIter is capped to prevent >200 ms layouts.
+   */
+  function _runLayout() {
+    if (!cy) return;
+    const count = cy.nodes().length;
+    if (count === 0) { _layoutPending = false; return; }
+
+    // If the graph view isn't visible, defer the layout until switchToGraph()
+    if (!_isVisible()) { _layoutPending = true; return; }
+    _layoutPending = false;
+
+    let cfg;
+    if (count <= 60) {
+      cfg = {
+        name: 'cose', animate: false, fit: true, padding: 40,
+        randomize: false, componentSpacing: 80,
+        nodeRepulsion: () => 450000, edgeElasticity: () => 100,
+        idealEdgeLength: 120, nodeOverlap: 20,
+        numIter: 400, gravity: 80, nestingFactor: 5,
+        initialTemp: 200, coolingFactor: 0.95, minTemp: 1.0,
+      };
+    } else if (count <= 250) {
+      cfg = {
+        name: 'cose', animate: false, fit: true, padding: 40,
+        randomize: true, nodeRepulsion: () => 350000,
+        idealEdgeLength: 90, numIter: 150,
+      };
+    } else if (count <= 800) {
+      // For large graphs use a very cheap scatter — visually acceptable,
+      // avoids seconds of blocking computation.
+      cfg = {
+        name: 'cose', animate: false, fit: true, padding: 40,
+        randomize: true, nodeRepulsion: () => 200000,
+        idealEdgeLength: 60, numIter: 60,
+      };
+    } else {
+      // >800 nodes: just fit; the cose algorithm would freeze the browser.
+      cy.fit(undefined, 40);
+      return;
+    }
+
+    cy.layout(cfg).run();
+  }
+
+  // ── Public API ──────────────────────────────────────────────────────────────
+
+  /**
+   * Load graph elements for a scan.  Returns stats.
+   * Increments a serial number so concurrent calls from rapid scan-switching
+   * don't clobber each other — only the latest call commits to the DOM.
+   */
   async function load(scanId, filters = {}) {
     currentScanId = scanId;
+    const serial = ++_loadSerial;
+
     const data = await API.getGraphElements(scanId, filters);
+    if (serial !== _loadSerial) return data.stats; // superseded — discard
+
     const elements = [
       ...(data.elements.nodes || []),
       ...(data.elements.edges || []),
     ];
+
     if (!cy) init();
-    cy.elements().remove();
-    cy.add(elements);
-    // Re-apply owned class after load (backend already sets classes, but ensure it)
-    cy.nodes().forEach(n => {
-      if (n.data('isOwned')) n.addClass('owned');
+
+    // cy.batch() groups all mutations into a single synchronous redraw pass
+    cy.batch(() => {
+      cy.elements().remove();
+      cy.add(elements);
+      // Restore owned CSS class from data flag set by the backend
+      cy.nodes().filter(n => n.data('isOwned')).addClass('owned');
     });
+
     _runLayout();
     return data.stats;
   }
 
-  function markOwnedNodes(nodeIds) {
-    if (!cy) return;
-    nodeIds.forEach(nid => {
-      const n = cy.getElementById(nid);
-      if (n.length) {
-        n.addClass('owned');
-        n.data('isOwned', true);
-      }
-    });
-  }
-
-  function updateNodeOwned(nodeId, owned) {
-    if (!cy) return;
-    const n = cy.getElementById(nodeId);
-    if (!n.length) return;
-    n.data('isOwned', owned);
-    if (owned) {
-      n.addClass('owned');
-    } else {
-      n.removeClass('owned');
-      const riskLevel = n.data('riskLevel') || 'safe';
-      const borderColors = { critical: '#F44336', risky: '#FF9800', safe: '#9E9E9E' };
-      const borderWidths = { critical: 3, risky: 2, safe: 1 };
-      n.data('borderColor', borderColors[riskLevel] || '#9E9E9E');
-      n.data('borderWidth', borderWidths[riskLevel] || 1);
-    }
-  }
-
-  function _runLayout() {
-    const count = cy.nodes().length;
-    if (count === 0) return;
-
-    let layoutConfig;
-    if (count < 80) {
-      layoutConfig = {
-        name: 'cose',
-        animate: true,
-        animationDuration: 600,
-        idealEdgeLength: 120,
-        nodeOverlap: 20,
-        refresh: 20,
-        fit: true,
-        padding: 40,
-        randomize: false,
-        componentSpacing: 80,
-        nodeRepulsion: () => 450000,
-        edgeElasticity: () => 100,
-        nestingFactor: 5,
-        gravity: 80,
-        numIter: 1000,
-        initialTemp: 200,
-        coolingFactor: 0.95,
-        minTemp: 1.0,
-      };
-    } else {
-      layoutConfig = {
-        name: 'cose',
-        animate: false,
-        randomize: true,
-        fit: true,
-        padding: 40,
-        nodeRepulsion: () => 400000,
-        idealEdgeLength: 100,
-        numIter: 500,
-      };
-    }
-
-    cy.layout(layoutConfig).run();
+  /** Called by switchView when the user navigates to the Graph tab. */
+  function runLayoutIfNeeded() {
+    if (_layoutPending) _runLayout();
   }
 
   function fitView() { cy && cy.fit(undefined, 40); }
@@ -276,7 +255,10 @@ const GraphView = (() => {
     cy && cy.zoom({ level: cy.zoom() * 0.75, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
   }
 
-  function resetLayout() { _runLayout(); }
+  function resetLayout() {
+    _layoutPending = false; // force re-run even if not pending
+    _runLayout();
+  }
 
   function highlightNode(nodeId) {
     if (!cy) return;
@@ -284,72 +266,104 @@ const GraphView = (() => {
     if (node.length) {
       _clearHighlight();
       _highlightNeighborhood(node);
-      cy.animate({ center: { eles: node }, zoom: 1.5, duration: 400 });
+      cy.animate({ center: { eles: node }, zoom: 1.5, duration: 300 });
     }
   }
 
   function toggleEdgeLabels(show) {
     if (!cy) return;
-    cy.edges().style('label', show ? ele => ele.data('edgeLabel') || '' : '');
+    cy.batch(() => {
+      cy.edges().style('label', show ? ele => ele.data('edgeLabel') || '' : '');
+    });
   }
 
   function highlightPath(nodeIds) {
     if (!cy || !nodeIds || nodeIds.length < 2) return;
-    _clearHighlight();
 
     const pathSet = new Set(nodeIds);
+
+    // Collect path edges before entering batch so selector queries run outside the lock
     const pathEdges = cy.collection();
     for (let i = 0; i < nodeIds.length - 1; i++) {
-      const src = nodeIds[i], tgt = nodeIds[i + 1];
-      const edge = cy.edges(`[source = "${src}"][target = "${tgt}"]`);
-      pathEdges.merge(edge);
+      pathEdges.merge(cy.edges(`[source = "${nodeIds[i]}"][target = "${nodeIds[i + 1]}"]`));
     }
-
-    cy.elements().addClass('faded');
-    nodeIds.forEach(nid => {
-      const n = cy.getElementById(nid);
-      if (n.length) n.removeClass('faded').addClass('highlighted');
-    });
-    pathEdges.removeClass('faded').addClass('highlighted');
-    pathEdges.forEach(e => e.style('label', e.data('edgeLabel') || ''));
-
     const pathNodes = cy.nodes().filter(n => pathSet.has(n.id()));
+
+    cy.batch(() => {
+      cy.elements().removeClass('faded highlighted');
+      cy.elements().addClass('faded');
+      pathNodes.removeClass('faded').addClass('highlighted');
+      pathEdges.removeClass('faded').addClass('highlighted');
+      // Label highlighted edges (batch-safe: style() inside batch is fine)
+      pathEdges.forEach(e => e.style('label', e.data('edgeLabel') || ''));
+    });
+
     if (pathNodes.length) {
-      cy.animate({ fit: { eles: pathNodes, padding: 80 }, duration: 500 });
+      cy.animate({ fit: { eles: pathNodes, padding: 80 }, duration: 400 });
     }
+  }
+
+  function markOwnedNodes(nodeIds) {
+    if (!cy) return;
+    cy.batch(() => {
+      nodeIds.forEach(nid => {
+        const n = cy.getElementById(nid);
+        if (n.length) { n.addClass('owned'); n.data('isOwned', true); }
+      });
+    });
+  }
+
+  function updateNodeOwned(nodeId, owned) {
+    if (!cy) return;
+    const n = cy.getElementById(nodeId);
+    if (!n.length) return;
+    cy.batch(() => {
+      n.data('isOwned', owned);
+      if (owned) {
+        n.addClass('owned');
+      } else {
+        n.removeClass('owned');
+        const rl = n.data('riskLevel') || 'safe';
+        n.data('borderColor', { critical: '#F44336', risky: '#FF9800', safe: '#9E9E9E' }[rl] || '#9E9E9E');
+        n.data('borderWidth', { critical: 3, risky: 2, safe: 1 }[rl] || 1);
+      }
+    });
   }
 
   function applyDiffOverlay(delta) {
     if (!cy) return;
-    cy.nodes().forEach(n => {
-      const id = n.id();
-      if (delta.new.has(id)) {
-        n.style({ 'border-color': '#4CAF50', 'border-width': 4 });
-      } else if (delta.removed.has(id)) {
-        n.style({ 'border-color': '#F44336', 'border-width': 4, 'opacity': 0.5 });
-      } else if (delta.riskUp.has(id)) {
-        n.style({ 'border-color': '#FF9800', 'border-width': 4 });
-      } else if (delta.riskDown.has(id)) {
-        n.style({ 'border-color': '#2196F3', 'border-width': 3 });
-      }
+    cy.batch(() => {
+      cy.nodes().forEach(n => {
+        const id = n.id();
+        if      (delta.new.has(id))     n.style({ 'border-color': '#4CAF50', 'border-width': 4 });
+        else if (delta.removed.has(id)) n.style({ 'border-color': '#F44336', 'border-width': 4, 'opacity': 0.5 });
+        else if (delta.riskUp.has(id))  n.style({ 'border-color': '#FF9800', 'border-width': 4 });
+        else if (delta.riskDown.has(id))n.style({ 'border-color': '#2196F3', 'border-width': 3 });
+      });
     });
   }
 
   function clearDiffOverlay() {
     if (!cy) return;
-    cy.nodes().forEach(n => {
-      const riskLevel = n.data('riskLevel') || 'safe';
-      const borderColors = { critical: '#F44336', risky: '#FF9800', safe: '#9E9E9E' };
-      const borderWidths = { critical: 3, risky: 2, safe: 1 };
-      n.style({
-        'border-color': n.data('isOwned') ? '#F59E0B' : (borderColors[riskLevel] || '#9E9E9E'),
-        'border-width': n.data('isOwned') ? 4 : (borderWidths[riskLevel] || 1),
-        'opacity': 1,
+    const bc = { critical: '#F44336', risky: '#FF9800', safe: '#9E9E9E' };
+    const bw = { critical: 3, risky: 2, safe: 1 };
+    cy.batch(() => {
+      cy.nodes().forEach(n => {
+        const rl = n.data('riskLevel') || 'safe';
+        n.style({
+          'border-color': n.data('isOwned') ? '#F59E0B' : (bc[rl] || '#9E9E9E'),
+          'border-width': n.data('isOwned') ? 4 : (bw[rl] || 1),
+          'opacity': 1,
+        });
       });
     });
   }
 
-  return { init, load, fitView, zoomIn, zoomOut, resetLayout, highlightNode,
-           toggleEdgeLabels, highlightPath, applyDiffOverlay, clearDiffOverlay,
-           markOwnedNodes, updateNodeOwned };
+  return {
+    init, load, runLayoutIfNeeded,
+    fitView, zoomIn, zoomOut, resetLayout, highlightNode,
+    toggleEdgeLabels, highlightPath,
+    markOwnedNodes, updateNodeOwned,
+    applyDiffOverlay, clearDiffOverlay,
+  };
 })();
