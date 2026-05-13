@@ -830,6 +830,78 @@ body {
   line-height: 1.5;
 }
 
+/* ── Path chain detail ────────────────────── */
+#path-chain-detail {
+  margin-top: 10px;
+  border-top: 1px solid var(--border-light);
+  padding-top: 10px;
+}
+.path-chain-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--text-faint);
+}
+#path-chain-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#path-chain-body { padding-left: 4px; }
+
+.chain-node {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+}
+.chain-node-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+.chain-node-last .chain-node-dot { background: var(--critical); }
+.chain-node-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.chain-node-name { font-size: 12px; font-weight: 500; word-break: break-word; }
+.chain-type-tag {
+  font-size: 10px;
+  color: var(--text-faint);
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+  padding: 1px 5px;
+  display: inline-block;
+  white-space: nowrap;
+}
+.chain-edge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0 2px 12px;
+}
+.chain-edge-arrow { color: var(--text-faint); font-size: 11px; flex-shrink: 0; }
+.chain-edge-label {
+  font-size: 10px;
+  color: #7B68EE;
+  background: #F3F0FF;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-weight: 600;
+}
+
+.path-result-item.active {
+  background: var(--bg-tertiary);
+  border-color: var(--accent);
+  border-left: 3px solid var(--accent);
+}
+
+/* ── Owned node indicator ─────────────────── */
+.stat-chip.owned { background: #FEF3C7; color: #B45309; }
+
+#detail-back:hover { color: var(--text); background: var(--bg-tertiary); border-radius: var(--radius-sm); }
+
 /* ── Scrollbars ───────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

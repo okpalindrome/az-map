@@ -4,17 +4,16 @@
 const GraphView = (() => {
   let cy = null;
   let currentScanId = null;
-  let legendVisible = true;
 
   const EDGE_COLORS = {
-    has_role: '#18181B',       // black — role assignment (most important edge type)
-    member_of: '#0891B2',      // cyan-600 — group membership
-    contains: '#94A3B8',       // slate-400 — structural containment
-    assigned_to: '#EA580C',    // orange-600 — managed identity assignment
-    has_system_identity: '#7C3AED', // violet — system identity
-    can_escalate_to: '#DC2626', // red-600 — escalation path
-    has_entra_role: '#B45309', // amber-700 — Entra directory role
-    default: '#D1D5DB',        // gray-300
+    has_role: '#18181B',
+    member_of: '#0891B2',
+    contains: '#94A3B8',
+    assigned_to: '#EA580C',
+    has_system_identity: '#7C3AED',
+    can_escalate_to: '#DC2626',
+    has_entra_role: '#B45309',
+    default: '#D1D5DB',
   };
 
   function init() {
@@ -26,7 +25,7 @@ const GraphView = (() => {
           selector: 'node',
           style: {
             'background-color': 'data(color)',
-            'label': 'data(label)',
+            'label': 'data(nodeLabel)',
             'color': '#1a1a1a',
             'font-size': '10px',
             'font-family': '-apple-system, BlinkMacSystemFont, Inter, Segoe UI, sans-serif',
@@ -65,6 +64,16 @@ const GraphView = (() => {
           style: { 'opacity': 0.2 }
         },
         {
+          selector: 'node.owned',
+          style: {
+            'border-color': '#F59E0B',
+            'border-width': 4,
+            'overlay-color': '#F59E0B',
+            'overlay-padding': 5,
+            'overlay-opacity': 0.12,
+          }
+        },
+        {
           selector: 'edge',
           style: {
             'width': 1.5,
@@ -73,7 +82,7 @@ const GraphView = (() => {
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
             'opacity': 0.6,
-            'label': '',  // labels hidden by default for cleanliness
+            'label': '',
             'font-size': '9px',
             'color': '#666',
             'text-background-color': '#fff',
@@ -88,13 +97,12 @@ const GraphView = (() => {
         },
         {
           selector: 'edge.highlighted',
-          style: { 'opacity': 1, 'width': 2, 'label': 'data(label)' }
+          style: { 'opacity': 1, 'width': 2 }
         },
         {
           selector: 'edge.faded',
           style: { 'opacity': 0.05 }
         },
-        // Risk level rings
         {
           selector: 'node[riskLevel = "critical"]',
           style: {
@@ -116,14 +124,12 @@ const GraphView = (() => {
       maxZoom: 4,
     });
 
-    // Node click → show detail panel
     cy.on('tap', 'node', (evt) => {
       const node = evt.target;
       DetailPanel.show(currentScanId, node.id());
       _highlightNeighborhood(node);
     });
 
-    // Edge click → show edge detail in tooltip
     cy.on('tap', 'edge', (evt) => {
       const edge = evt.target;
       const props = edge.data('properties') || {};
@@ -146,16 +152,14 @@ const GraphView = (() => {
 
     cy.on('mouseover', 'node', (evt) => {
       const d = evt.target.data();
+      const ownedTag = d.isOwned ? '\n♦ Owned' : '';
       Tooltip.show(
-        `${d.fullLabel || d.label}\n${d.nodeType}${d.riskLevel !== 'safe' ? '\n⚠ ' + d.riskLevel : ''}`,
+        `${d.fullLabel || d.nodeLabel}\n${d.nodeType}${d.riskLevel !== 'safe' ? '\n⚠ ' + d.riskLevel : ''}${ownedTag}`,
         evt.originalEvent.clientX + 12,
         evt.originalEvent.clientY - 10,
       );
     });
     cy.on('mouseout', 'node', () => Tooltip.hide());
-    cy.on('mouseover', 'edge', (evt) => {
-      // handled on tap for edges
-    });
   }
 
   function _highlightNeighborhood(node) {
@@ -184,8 +188,27 @@ const GraphView = (() => {
     if (!cy) init();
     cy.elements().remove();
     cy.add(elements);
+    // Re-apply owned class after load (backend already sets classes, but ensure it)
+    cy.nodes().forEach(n => {
+      if (n.data('isOwned')) n.addClass('owned');
+    });
     _runLayout();
     return data.stats;
+  }
+
+  function markOwnedNodes(nodeIds) {
+    if (!cy) return;
+    cy.nodes().removeClass('owned').forEach(n => {
+      n.data('isOwned', false);
+      n.data('borderColor', n.data('_origBorderColor') || n.data('borderColor'));
+    });
+    nodeIds.forEach(nid => {
+      const n = cy.getElementById(nid);
+      if (n.length) {
+        n.addClass('owned');
+        n.data('isOwned', true);
+      }
+    });
   }
 
   function _runLayout() {
@@ -230,9 +253,7 @@ const GraphView = (() => {
     cy.layout(layoutConfig).run();
   }
 
-  function fitView() {
-    cy && cy.fit(undefined, 40);
-  }
+  function fitView() { cy && cy.fit(undefined, 40); }
 
   function zoomIn() {
     cy && cy.zoom({ level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
@@ -242,9 +263,7 @@ const GraphView = (() => {
     cy && cy.zoom({ level: cy.zoom() * 0.75, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
   }
 
-  function resetLayout() {
-    _runLayout();
-  }
+  function resetLayout() { _runLayout(); }
 
   function highlightNode(nodeId) {
     if (!cy) return;
@@ -258,19 +277,14 @@ const GraphView = (() => {
 
   function toggleEdgeLabels(show) {
     if (!cy) return;
-    cy.edges().style('label', show ? 'data(label)' : '');
+    cy.edges().style('label', show ? ele => ele.data('edgeLabel') || '' : '');
   }
 
-  /**
-   * Highlight a specific attack path (list of node IDs).
-   * Fades everything else, colors path nodes and edges distinctly.
-   */
   function highlightPath(nodeIds) {
     if (!cy || !nodeIds || nodeIds.length < 2) return;
     _clearHighlight();
 
     const pathSet = new Set(nodeIds);
-    // Collect path edges (edges between consecutive path nodes)
     const pathEdges = cy.collection();
     for (let i = 0; i < nodeIds.length - 1; i++) {
       const src = nodeIds[i], tgt = nodeIds[i + 1];
@@ -284,18 +298,14 @@ const GraphView = (() => {
       if (n.length) n.removeClass('faded').addClass('highlighted');
     });
     pathEdges.removeClass('faded').addClass('highlighted');
+    pathEdges.forEach(e => e.style('label', e.data('edgeLabel') || ''));
 
-    // Animate to fit path
     const pathNodes = cy.nodes().filter(n => pathSet.has(n.id()));
     if (pathNodes.length) {
       cy.animate({ fit: { eles: pathNodes, padding: 80 }, duration: 500 });
     }
   }
 
-  /**
-   * Apply diff overlay coloring to nodes.
-   * delta: { new: Set<id>, removed: Set<id>, riskUp: Set<id>, riskDown: Set<id> }
-   */
   function applyDiffOverlay(delta) {
     if (!cy) return;
     cy.nodes().forEach(n => {
@@ -319,13 +329,14 @@ const GraphView = (() => {
       const borderColors = { critical: '#F44336', risky: '#FF9800', safe: '#9E9E9E' };
       const borderWidths = { critical: 3, risky: 2, safe: 1 };
       n.style({
-        'border-color': borderColors[riskLevel] || '#9E9E9E',
-        'border-width': borderWidths[riskLevel] || 1,
+        'border-color': n.data('isOwned') ? '#F59E0B' : (borderColors[riskLevel] || '#9E9E9E'),
+        'border-width': n.data('isOwned') ? 4 : (borderWidths[riskLevel] || 1),
         'opacity': 1,
       });
     });
   }
 
   return { init, load, fitView, zoomIn, zoomOut, resetLayout, highlightNode,
-           toggleEdgeLabels, highlightPath, applyDiffOverlay, clearDiffOverlay };
+           toggleEdgeLabels, highlightPath, applyDiffOverlay, clearDiffOverlay,
+           markOwnedNodes };
 })();

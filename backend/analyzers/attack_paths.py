@@ -10,15 +10,34 @@ logger = logging.getLogger(__name__)
 
 
 class AttackPathAnalyzer:
-    """
-    Given a NetworkX directed graph of the Azure environment, finds:
-    - All paths from a given principal to high-value targets
-    - Shortest paths to Owner-equivalent privilege
-    - Lateral movement opportunities
-    """
 
     def __init__(self, graph):
         self.G = graph
+
+    # ── Shared helper ──────────────────────────────────────────────────────
+
+    def _enrich_path(self, path_ids: list[str]) -> list[dict]:
+        """Convert a list of node IDs to step dicts with edge type info."""
+        steps = []
+        for i, node_id in enumerate(path_ids):
+            node_data = self.G.nodes.get(node_id, {})
+            step = {
+                "node_id": node_id,
+                "node_type": node_data.get("node_type", "unknown"),
+                "name": node_data.get("name", node_id),
+                "display_name": node_data.get("display_name") or node_data.get("name", node_id),
+            }
+            if i > 0:
+                edge_data = self.G.get_edge_data(path_ids[i - 1], node_id) or {}
+                step["edge_type"] = edge_data.get("edge_type", "→")
+                props = edge_data.get("properties") or {}
+                step["edge_props"] = {
+                    k: props[k] for k in ("role_name", "scope", "scope_level") if k in props
+                }
+            steps.append(step)
+        return steps
+
+    # ── Public methods ─────────────────────────────────────────────────────
 
     def find_paths_to_target(
         self, source_id: str, target_ids: list[str], max_depth: int = 5
@@ -31,24 +50,13 @@ class AttackPathAnalyzer:
                 continue
             try:
                 for path in nx.all_simple_paths(self.G, source_id, target, cutoff=max_depth):
-                    path_details = []
-                    for i, node_id in enumerate(path):
-                        node_data = self.G.nodes.get(node_id, {})
-                        step = {
-                            "node_id": node_id,
-                            "node_type": node_data.get("node_type", "unknown"),
-                            "name": node_data.get("name", node_id),
-                        }
-                        if i > 0:
-                            edge_data = self.G.get_edge_data(path[i - 1], node_id) or {}
-                            step["edge_type"] = edge_data.get("edge_type", "")
-                            step["edge_props"] = edge_data
-                        path_details.append(step)
+                    steps = self._enrich_path(path)
                     paths.append({
                         "source": source_id,
+                        "source_name": steps[0]["display_name"] if steps else source_id,
                         "target": target,
                         "length": len(path) - 1,
-                        "path": path_details,
+                        "path": steps,
                     })
             except Exception as e:
                 logger.debug(f"Path search error {source_id}→{target}: {e}")
@@ -67,13 +75,14 @@ class AttackPathAnalyzer:
                     node_data = self.G.nodes.get(source, {})
                     if node_data.get("node_type") in {"user", "group", "service_principal", "managed_identity"}:
                         try:
-                            path = nx.shortest_path(self.G, source, target)
+                            path_ids = nx.shortest_path(self.G, source, target)
+                            steps = self._enrich_path(path_ids)
                             all_paths.append({
                                 "source": source,
-                                "source_name": node_data.get("name", source),
+                                "source_name": node_data.get("display_name") or node_data.get("name", source),
                                 "target": target,
-                                "length": len(path) - 1,
-                                "path": path,
+                                "length": len(path_ids) - 1,
+                                "path": steps,
                             })
                         except nx.NetworkXNoPath:
                             pass
@@ -94,14 +103,18 @@ class AttackPathAnalyzer:
                 "vm", "automation_account",
             }:
                 try:
-                    path = nx.shortest_path(self.G, from_node_id, target)
-                    if len(path) - 1 <= max_depth:
+                    path_ids = nx.shortest_path(self.G, from_node_id, target)
+                    if len(path_ids) - 1 <= max_depth:
+                        steps = self._enrich_path(path_ids)
                         reachable.append({
+                            "source": from_node_id,
+                            "source_name": steps[0]["display_name"] if steps else from_node_id,
                             "target": target,
-                            "target_name": node_data.get("name", target),
+                            "target_name": node_data.get("display_name") or node_data.get("name", target),
                             "target_type": node_data.get("node_type", ""),
-                            "hops": len(path) - 1,
-                            "path": path,
+                            "hops": len(path_ids) - 1,
+                            "length": len(path_ids) - 1,
+                            "path": steps,
                         })
                 except nx.NetworkXNoPath:
                     pass

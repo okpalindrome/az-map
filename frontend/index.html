@@ -41,11 +41,11 @@
   <button id="btn-paths" class="btn btn-ghost" title="Attack path finder">⚡ Paths</button>
   <button id="btn-diff" class="btn btn-ghost" title="Compare scans (diff)">⇄ Diff</button>
   <div class="toolbar-sep"></div>
-  <!-- Export -->
-  <button id="btn-export-json" class="btn btn-ghost" title="Export JSON">JSON</button>
-  <button id="btn-export-csv"  class="btn btn-ghost" title="Export CSV">CSV</button>
-  <button id="btn-export-html" class="btn btn-ghost" title="Export HTML Report">Report</button>
-  <button id="btn-export-paths" class="btn btn-ghost" title="Export attack paths JSON">Paths</button>
+  <!-- Export / Import -->
+  <button id="btn-export-json" class="btn btn-ghost" title="Export full scan as JSON">JSON</button>
+  <button id="btn-export-csv"  class="btn btn-ghost" title="Export findings as CSV">CSV</button>
+  <button id="btn-import" class="btn btn-ghost" title="Import previously exported scan JSON">Import</button>
+  <input id="import-file-input" type="file" accept=".json" style="display:none;">
   <div style="flex:1;"></div>
   <div id="scan-status">
     <div class="status-dot"></div>
@@ -217,7 +217,15 @@
           <button id="btn-find-paths" class="btn btn-primary" style="flex:1; padding:6px;">Find Paths</button>
           <button id="btn-global-admin-paths" class="btn btn-ghost" style="flex:1; padding:6px; font-size:11px;">→ Global Admin</button>
         </div>
+        <button id="btn-owned-paths" class="btn btn-ghost" style="width:100%; margin-top:6px; font-size:11px; border-color:#F59E0B; color:#B45309;">♦ From Owned Nodes</button>
         <div id="path-results"></div>
+        <div id="path-chain-detail" style="display:none;">
+          <div class="path-chain-header">
+            <span id="path-chain-title"></span>
+            <button id="path-chain-close" style="background:none;border:none;cursor:pointer;color:#bbb;font-size:12px;padding:0;">✕</button>
+          </div>
+          <div id="path-chain-body"></div>
+        </div>
       </div>
     </div>
 
@@ -260,9 +268,12 @@
   <!-- Detail panel -->
   <div id="detail-panel">
     <div id="detail-header">
-      <div>
-        <div id="detail-title">—</div>
-        <div id="detail-type"></div>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <button id="detail-back" style="display:none; background:none; border:none; cursor:pointer; color:#999; font-size:14px; padding:2px 4px;" title="Back">←</button>
+        <div>
+          <div id="detail-title">—</div>
+          <div id="detail-type"></div>
+        </div>
       </div>
       <button id="detail-close">✕</button>
     </div>

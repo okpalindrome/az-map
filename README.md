@@ -39,7 +39,23 @@ az-map/
 └── tests/                   ← 79 pytest tests (unit + integration + API)
 ```
 
-**Stack:** Python 3.11 · FastAPI · SQLite + SQLAlchemy · NetworkX · Cytoscape.js · httpx · azure-identity
+---
+
+## Tech Stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| **Backend runtime** | Python 3.11 | Server + collectors |
+| **Web framework** | FastAPI + uvicorn | REST API, SSE scan streaming |
+| **Database** | SQLite (`~/.az-map/azmap.db`) | Persistent scan storage (no server required) |
+| **ORM** | SQLAlchemy | DB models: Scan, Node, Edge, Finding |
+| **Graph engine** | NetworkX (DiGraph) | In-memory attack path analysis |
+| **Azure auth** | azure-identity `AzureCliCredential` | Reads token from active `az login` session |
+| **Azure APIs** | azure-mgmt-* (subscription, authorization, resource, storage, keyvault, web, compute, msi) | ARM control-plane data collection |
+| **MS Graph** | raw httpx (no msgraph-sdk) | Users, groups, SPs, CA policies, Entra roles |
+| **Frontend** | Vanilla JS (no framework, no build step) | Zero-dependency SPA |
+| **Graph visualisation** | Cytoscape.js (vendored locally) | Force-directed interactive graph |
+| **Theme** | Obsidian-inspired white | Clean, high-contrast, printable |
 
 ---
 

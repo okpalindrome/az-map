@@ -6,7 +6,7 @@ const API = {
 
   async _req(method, path, body) {
     const opts = { method, headers: { 'Content-Type': 'application/json' } };
-    if (body) opts.body = JSON.stringify(body);
+    if (body !== undefined) opts.body = JSON.stringify(body);
     const r = await fetch(this._base + path, opts);
     if (!r.ok) {
       const err = await r.json().catch(() => ({ detail: r.statusText }));
@@ -15,9 +15,9 @@ const API = {
     return r.json();
   },
 
-  get: (path) => API._req('GET', path, null),
+  get: (path) => API._req('GET', path, undefined),
   post: (path, body) => API._req('POST', path, body),
-  del: (path) => API._req('DELETE', path, null),
+  del: (path) => API._req('DELETE', path, undefined),
 
   // -- Scan --
   startScan: (subscriptionId, label) =>
@@ -27,6 +27,8 @@ const API = {
   getScan: (id) => API.get(`/api/scan/${id}`),
   deleteScan: (id) => API.del(`/api/scan/${id}`),
   listSubscriptions: () => API.get('/api/scan/subscriptions'),
+  getCurrentUser: () => API.get('/api/scan/current-user'),
+  importScan: (jsonData) => API.post('/api/scan/import', jsonData),
 
   streamScan(scanId, onEvent, onDone) {
     const es = new EventSource(`/api/scan/stream/${scanId}`);
@@ -61,6 +63,10 @@ const API = {
     const qs = new URLSearchParams(params).toString();
     return API.get(`/api/graph/${scanId}/paths?${qs}`);
   },
+  getPathsFromOwned: (scanId) => API.get(`/api/graph/${scanId}/paths-from-owned`),
+  setNodeOwned: (scanId, nodeId, owned) =>
+    API.post(`/api/graph/${scanId}/owned`, { node_id: nodeId, owned }),
+  getOwnedNodes: (scanId) => API.get(`/api/graph/${scanId}/owned`),
 
   // -- Findings --
   getFindings: (scanId, params = {}) => {

@@ -1,7 +1,9 @@
-"""Graph data API: cytoscape elements, node detail, path queries."""
+"""Graph data API: cytoscape elements, node detail, path queries, owned nodes."""
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -10,17 +12,35 @@ from ..models.db_models import Edge, Node, Scan
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
 
+# In-memory graph cache: scan_id → (G, timestamp)
+_graph_cache: dict[str, tuple] = {}
+_CACHE_TTL = 300  # 5 minutes
+
+
+def _get_cached_graph(scan_id: str, db: Session):
+    now = time.time()
+    if scan_id in _graph_cache:
+        G, ts = _graph_cache[scan_id]
+        if now - ts < _CACHE_TTL:
+            return G
+    G = build_graph(scan_id, db)
+    _graph_cache[scan_id] = (G, now)
+    return G
+
+
+def _invalidate_cache(scan_id: str):
+    _graph_cache.pop(scan_id, None)
+
 
 @router.get("/{scan_id}/elements")
 def get_graph_elements(
     scan_id: str,
-    node_types: Optional[str] = Query(None, description="Comma-separated node types to include"),
-    risk_levels: Optional[str] = Query(None, description="Comma-separated risk levels: safe,risky,critical"),
-    search: Optional[str] = Query(None, description="Search string for node name/id", max_length=200),
-    limit: int = Query(2000, ge=100, le=10000, description="Max nodes to return (sorted by risk desc)"),
+    node_types: Optional[str] = Query(None),
+    risk_levels: Optional[str] = Query(None),
+    search: Optional[str] = Query(None, max_length=200),
+    limit: int = Query(2000, ge=100, le=10000),
     db: Session = Depends(get_db),
 ):
-    """Return Cytoscape.js-ready graph elements for a scan."""
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan:
         raise HTTPException(404, "Scan not found")
@@ -36,12 +56,10 @@ def get_inventory(
     scan_id: str,
     limit: int = Query(200, ge=1, le=2000),
     offset: int = Query(0, ge=0),
-    node_type: Optional[str] = Query(None, description="Comma-separated node types"),
+    node_type: Optional[str] = Query(None),
     sort_by: str = Query("risk_score", enum=["risk_score", "name", "node_type"]),
     db: Session = Depends(get_db),
 ):
-    """Paginated lightweight node inventory — avoids loading all nodes into memory."""
-    from ..models.db_models import Node
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan:
         raise HTTPException(404, "Scan not found")
@@ -81,7 +99,6 @@ def get_inventory(
 
 @router.get("/{scan_id}/node/{node_id}")
 def get_node_detail(scan_id: str, node_id: str, db: Session = Depends(get_db)):
-    """Return full detail for a single node including its edges."""
     node = db.query(Node).filter(
         Node.scan_id == scan_id, Node.node_id == node_id
     ).first()
@@ -107,6 +124,7 @@ def get_node_detail(scan_id: str, node_id: str, db: Session = Depends(get_db)):
             "properties": e.properties or {},
         }
 
+    props = node.properties or {}
     return {
         "node_id": node.node_id,
         "node_type": node.node_type,
@@ -115,7 +133,8 @@ def get_node_detail(scan_id: str, node_id: str, db: Session = Depends(get_db)):
         "risk_score": node.risk_score,
         "risk_level": node.risk_level,
         "risk_reasons": node.risk_reasons or [],
-        "properties": node.properties or {},
+        "properties": props,
+        "is_owned": bool(props.get("is_owned")),
         "relationships": (
             [_edge_dict(e, "outbound") for e in out_edges]
             + [_edge_dict(e, "inbound") for e in in_edges]
@@ -128,17 +147,16 @@ def get_attack_paths(
     scan_id: str,
     from_node: Optional[str] = Query(None),
     to_node: Optional[str] = Query(None),
-    max_depth: int = Query(5, ge=1, le=8),
+    max_depth: int = Query(4, ge=1, le=6),
     db: Session = Depends(get_db),
 ):
-    """Find attack paths between nodes using NetworkX."""
     from ..analyzers.attack_paths import AttackPathAnalyzer
 
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan:
         raise HTTPException(404, "Scan not found")
 
-    G = build_graph(scan_id, db)
+    G = _get_cached_graph(scan_id, db)
     analyzer = AttackPathAnalyzer(G)
 
     if from_node and to_node:
@@ -146,8 +164,6 @@ def get_attack_paths(
     elif from_node:
         paths = analyzer.find_lateral_movement(from_node, max_depth)
     else:
-        # Find all escalation paths to Owner-equivalent nodes
-        import networkx as nx
         owner_nodes = [
             nid for nid, data in G.nodes(data=True)
             if data.get("node_type") == "role_definition"
@@ -155,12 +171,77 @@ def get_attack_paths(
         ]
         paths = analyzer.find_all_escalation_paths(owner_nodes)
 
-    return {"paths": paths[:100]}  # cap at 100 for performance
+    return {"paths": paths[:50]}
+
+
+@router.get("/{scan_id}/paths-from-owned")
+def get_paths_from_owned(
+    scan_id: str,
+    max_depth: int = Query(4, ge=1, le=6),
+    db: Session = Depends(get_db),
+):
+    """Find attack paths from all nodes marked as owned in this scan."""
+    from ..analyzers.attack_paths import AttackPathAnalyzer
+
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+
+    owned_nodes = db.query(Node).filter(Node.scan_id == scan_id).all()
+    owned_ids = [n.node_id for n in owned_nodes if (n.properties or {}).get("is_owned")]
+
+    if not owned_ids:
+        return {"paths": [], "owned_nodes": []}
+
+    G = _get_cached_graph(scan_id, db)
+    analyzer = AttackPathAnalyzer(G)
+
+    all_paths = []
+    for node_id in owned_ids:
+        paths = analyzer.find_lateral_movement(node_id, max_depth)
+        all_paths.extend(paths[:10])
+
+    return {"paths": all_paths[:100], "owned_nodes": owned_ids}
+
+
+class OwnedRequest(BaseModel):
+    node_id: str
+    owned: bool = True
+
+
+@router.post("/{scan_id}/owned")
+def set_node_owned(scan_id: str, body: OwnedRequest, db: Session = Depends(get_db)):
+    """Mark or unmark a node as owned/pwned."""
+    node = db.query(Node).filter(
+        Node.scan_id == scan_id, Node.node_id == body.node_id
+    ).first()
+    if not node:
+        raise HTTPException(404, "Node not found")
+    props = dict(node.properties or {})
+    props["is_owned"] = body.owned
+    node.properties = props
+    db.commit()
+    _invalidate_cache(scan_id)
+    return {"node_id": body.node_id, "is_owned": body.owned}
+
+
+@router.get("/{scan_id}/owned")
+def get_owned_nodes(scan_id: str, db: Session = Depends(get_db)):
+    """Return all node IDs marked as owned in this scan."""
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+    nodes = db.query(Node).filter(Node.scan_id == scan_id).all()
+    return {
+        "owned_nodes": [
+            {"node_id": n.node_id, "node_type": n.node_type, "name": n.display_name or n.name}
+            for n in nodes if (n.properties or {}).get("is_owned")
+        ]
+    }
 
 
 @router.get("/{scan_id}/stats")
 def get_graph_stats(scan_id: str, db: Session = Depends(get_db)):
-    """Return high-level stats for the scan graph."""
     from sqlalchemy import func
     from ..models.db_models import Finding, RoleAssignment
 
@@ -186,7 +267,6 @@ def get_graph_stats(scan_id: str, db: Session = Depends(get_db)):
         .group_by(Finding.severity)
         .all()
     )
-
     total_ra = db.query(func.count(RoleAssignment.id)).filter(
         RoleAssignment.scan_id == scan_id
     ).scalar()

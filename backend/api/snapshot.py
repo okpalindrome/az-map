@@ -25,7 +25,10 @@ def list_snapshots(subscription_id: str, db: Session = Depends(get_db)):
     """List all completed scans for a subscription, ordered by date desc."""
     scans = (
         db.query(Scan)
-        .filter(Scan.subscription_id == subscription_id, Scan.status == "completed")
+        .filter(
+            Scan.subscription_id == subscription_id,
+            Scan.status.in_(["completed", "imported"]),
+        )
         .order_by(Scan.completed_at.desc())
         .all()
     )

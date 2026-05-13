@@ -4,8 +4,8 @@
 const App = (() => {
   let currentScanId = null;
   let activeView = 'graph';
+  let _currentUser = null;
 
-  // ── Startup ────────────────────────────────
   async function init() {
     GraphView.init();
     TableView.init();
@@ -15,8 +15,11 @@ const App = (() => {
     _bindAttackPathPanel();
     _bindDiffModal();
     _bindTenantModal();
+    _bindImport();
     await Promise.all([_loadScanList(), _loadTenantList(), _loadSubscriptions()]);
     _showWelcome(true);
+    // Detect current az user in background
+    API.getCurrentUser().then(u => { _currentUser = u; }).catch(() => {});
   }
 
   function _bindTenantModal() {
@@ -25,6 +28,37 @@ const App = (() => {
     document.getElementById('btn-tenant-save')?.addEventListener('click', _saveTenant);
     document.getElementById('tenant-modal')?.addEventListener('click', (e) => {
       if (e.target === document.getElementById('tenant-modal')) _closeTenantModal();
+    });
+  }
+
+  // ── Import JSON ────────────────────────────
+  function _bindImport() {
+    const btn = document.getElementById('btn-import');
+    const inp = document.getElementById('import-file-input');
+    if (!btn || !inp) return;
+
+    btn.addEventListener('click', () => inp.click());
+
+    inp.addEventListener('change', async () => {
+      const file = inp.files?.[0];
+      if (!file) return;
+      inp.value = '';
+      try {
+        const text = await file.text();
+        const json = JSON.parse(text);
+        btn.disabled = true;
+        btn.textContent = 'Importing…';
+        const scan = await API.importScan(json);
+        await _loadScanList();
+        await _selectScan(scan.scan_id);
+        _setStatus('done', 'Import complete');
+      } catch (e) {
+        alert('Import failed: ' + e.message);
+        _setStatus('error', 'Import failed');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Import';
+      }
     });
   }
 
@@ -89,8 +123,8 @@ const App = (() => {
     });
     document.getElementById('btn-fit').addEventListener('click', () => GraphView.fitView());
 
-    // Export buttons
-    ['json', 'csv', 'html', 'paths'].forEach(fmt => {
+    // Export buttons (JSON + CSV only)
+    ['json', 'csv'].forEach(fmt => {
       const btn = document.getElementById(`btn-export-${fmt}`);
       if (btn) btn.addEventListener('click', () => {
         if (!currentScanId) return;
@@ -98,13 +132,11 @@ const App = (() => {
       });
     });
 
-    // Graph controls
     document.getElementById('gc-zoomin').addEventListener('click', () => GraphView.zoomIn());
     document.getElementById('gc-zoomout').addEventListener('click', () => GraphView.zoomOut());
     document.getElementById('gc-fit').addEventListener('click', () => GraphView.fitView());
     document.getElementById('gc-reset').addEventListener('click', () => GraphView.resetLayout());
 
-    // Edge label toggle
     const edgeToggle = document.getElementById('toggle-edge-labels');
     if (edgeToggle) {
       edgeToggle.addEventListener('change', (e) => GraphView.toggleEdgeLabels(e.target.checked));
@@ -214,12 +246,16 @@ const App = (() => {
         list.innerHTML = '<p style="padding:12px; color:#999; font-size:12px;">No scans yet.</p>';
         return;
       }
-      list.innerHTML = scans.map(s => `
+      list.innerHTML = scans.map(s => {
+        const isImported = (s.snapshot_label || '').startsWith('Imported:');
+        return `
         <div class="scan-item ${s.scan_id === currentScanId ? 'active' : ''}"
              data-id="${s.scan_id}">
           <div style="display:flex; align-items:baseline; gap:4px;">
-            <div class="scan-item-name" style="flex:1;">${_esc(s.snapshot_label || s.subscription_name || s.subscription_id)}</div>
-            ${s.status === 'completed'
+            <div class="scan-item-name" style="flex:1;">
+              ${isImported ? '<span style="color:#7B68EE; font-size:10px;">↓</span> ' : ''}${_esc(s.snapshot_label || s.subscription_name || s.subscription_id)}
+            </div>
+            ${s.status === 'completed' && !isImported
               ? `<button class="scan-label-btn" data-id="${s.scan_id}" data-label="${_esc(s.snapshot_label||'')}"
                    title="Edit label" style="background:none;border:none;cursor:pointer;color:#ccc;font-size:11px;padding:0;flex-shrink:0;">✎</button>`
               : ''}
@@ -230,7 +266,8 @@ const App = (() => {
               ${s.status}
             </span>
           </div>
-        </div>`).join('');
+        </div>`;
+      }).join('');
       list.querySelectorAll('.scan-item').forEach(item => {
         item.addEventListener('click', () => _selectScan(item.dataset.id));
       });
@@ -256,10 +293,23 @@ const App = (() => {
       await _loadGraph(scanId);
       _setStatus('done', 'Loaded');
       if (activeView === 'table') TableView.render(scanId);
+      // Auto-mark current user as owned if found
+      _autoMarkCurrentUser(scanId);
     } catch (e) {
       _setStatus('error', 'Failed to load');
       console.error(e);
     }
+  }
+
+  async function _autoMarkCurrentUser(scanId) {
+    if (!_currentUser) {
+      try { _currentUser = await API.getCurrentUser(); } catch (_) { return; }
+    }
+    if (!_currentUser?.object_id) return;
+    try {
+      await API.setNodeOwned(scanId, _currentUser.object_id, true);
+      GraphView.markOwnedNodes([_currentUser.object_id]);
+    } catch (_) {}
   }
 
   async function _loadGraph(scanId) {
@@ -267,7 +317,6 @@ const App = (() => {
     const stats = await GraphView.load(scanId, params);
     _updateStats(stats);
 
-    // Load findings summary for sidebar chips
     try {
       const summary = await API.getFindingsSummary(scanId);
       _updateFindingChips(summary.by_severity || {});
@@ -311,7 +360,6 @@ const App = (() => {
     const pathPanel = document.getElementById('attack-path-panel');
     if (graphControls) graphControls.style.display = view === 'graph' ? '' : 'none';
     if (legend) legend.style.display = view === 'graph' ? '' : 'none';
-    // Hide attack path panel when not in graph view
     if (pathPanel && view !== 'graph') pathPanel.classList.remove('visible');
 
     if (view === 'table' && currentScanId) {
@@ -327,13 +375,12 @@ const App = (() => {
     const panel = document.getElementById('attack-path-panel');
     const closeBtn = document.getElementById('path-panel-close');
 
-    btnPaths?.addEventListener('click', () => {
-      panel.classList.toggle('visible');
-    });
+    btnPaths?.addEventListener('click', () => panel.classList.toggle('visible'));
     closeBtn?.addEventListener('click', () => panel.classList.remove('visible'));
 
     document.getElementById('btn-find-paths')?.addEventListener('click', _findPaths);
     document.getElementById('btn-global-admin-paths')?.addEventListener('click', _findGlobalAdminPaths);
+    document.getElementById('btn-owned-paths')?.addEventListener('click', _findPathsFromOwned);
   }
 
   async function _findPaths() {
@@ -368,32 +415,112 @@ const App = (() => {
     }
   }
 
+  async function _findPathsFromOwned() {
+    if (!currentScanId) return;
+    const results = document.getElementById('path-results');
+    results.innerHTML = '<p style="color:#999; font-size:12px;">Finding paths from owned nodes…</p>';
+    try {
+      const data = await API.getPathsFromOwned(currentScanId);
+      if (!data.owned_nodes?.length) {
+        results.innerHTML = '<p style="color:#999; font-size:12px;">No owned nodes marked yet. Mark a node as Owned in the detail panel first.</p>';
+        return;
+      }
+      _renderPathResults(data.paths || []);
+    } catch (e) {
+      results.innerHTML = `<p style="color:#F44336; font-size:12px;">Error: ${e.message}</p>`;
+    }
+  }
+
   function _renderPathResults(paths) {
     const results = document.getElementById('path-results');
+    _hidePathChain();
     if (!paths.length) {
       results.innerHTML = '<p style="color:#999; font-size:12px; margin-top:8px;">No paths found.</p>';
       return;
     }
     results.innerHTML = paths.slice(0, 20).map((p, i) => {
-      const pathIds = p.path || [];
-      const src = p.source_name || (p.path_details?.[0]?.name) || p.source || '';
-      const tgt = p.target || '';
-      const hops = p.length || (pathIds.length - 1);
+      const steps = _pathSteps(p);
+      const src = p.source_name || steps[0]?.display_name || steps[0]?.name || p.source || '';
+      const tgt = p.target_name || steps[steps.length - 1]?.display_name || steps[steps.length - 1]?.name || (p.target || '').split('/').pop() || p.target || '';
+      const hops = p.length ?? p.hops ?? (steps.length - 1);
       return `<div class="path-result-item" data-idx="${i}">
         <span class="path-hops">${hops}h</span>
         <strong>${_esc(src)}</strong>
         <span style="color:#999;"> → </span>
-        <span>${_esc(tgt.split('/').pop() || tgt)}</span>
+        <span>${_esc(tgt)}</span>
       </div>`;
     }).join('');
 
+    let _activeIdx = -1;
     results.querySelectorAll('.path-result-item').forEach((el, i) => {
       el.addEventListener('click', () => {
+        results.querySelectorAll('.path-result-item').forEach(e => e.classList.remove('active'));
+        if (_activeIdx === i) {
+          _activeIdx = -1;
+          _hidePathChain();
+          return;
+        }
+        _activeIdx = i;
+        el.classList.add('active');
         const p = paths[i];
-        const pathIds = p.path || (p.path_details || []).map(s => s.node_id);
-        if (pathIds.length) GraphView.highlightPath(pathIds);
+        const steps = _pathSteps(p);
+        GraphView.highlightPath(steps.map(s => s.node_id).filter(Boolean));
+        _showPathChain(p, steps);
       });
     });
+  }
+
+  function _pathSteps(p) {
+    const raw = p.path || [];
+    if (!raw.length) return [];
+    // If already step dicts (have node_id field), use them; otherwise treat as bare IDs
+    if (typeof raw[0] === 'object' && raw[0].node_id) return raw;
+    return raw.map(id => ({ node_id: id, name: id, display_name: id, node_type: '' }));
+  }
+
+  function _showPathChain(p, steps) {
+    const container = document.getElementById('path-chain-detail');
+    const title = document.getElementById('path-chain-title');
+    const body = document.getElementById('path-chain-body');
+    if (!container) return;
+
+    const src = p.source_name || steps[0]?.display_name || steps[0]?.name || '';
+    const tgt = p.target_name || steps[steps.length - 1]?.display_name || steps[steps.length - 1]?.name || (p.target || '').split('/').pop() || p.target || '';
+    title.textContent = `${src} → ${tgt}`;
+
+    body.innerHTML = steps.map((step, i) => {
+      const isLast = i === steps.length - 1;
+      const label = _esc(step.display_name || step.name || step.node_id || '');
+      const typeTag = step.node_type ? `<span class="chain-type-tag">${_esc(step.node_type.replace(/_/g, ' '))}</span>` : '';
+
+      let edgeHtml = '';
+      if (i > 0 && step.edge_type) {
+        const edgeLabel = step.edge_type.replace(/_/g, ' ');
+        const roleSuffix = step.edge_props?.role_name ? `: ${step.edge_props.role_name}` : '';
+        edgeHtml = `<div class="chain-edge"><span class="chain-edge-arrow">↳</span><span class="chain-edge-label">${_esc(edgeLabel + roleSuffix)}</span></div>`;
+      }
+
+      return `${i > 0 ? edgeHtml : ''}
+        <div class="chain-node ${isLast ? 'chain-node-last' : ''}">
+          <div class="chain-node-dot"></div>
+          <div class="chain-node-info">
+            <span class="chain-node-name">${label}</span>
+            ${typeTag}
+          </div>
+        </div>`;
+    }).join('');
+
+    container.style.display = '';
+
+    document.getElementById('path-chain-close')?.addEventListener('click', () => {
+      _hidePathChain();
+      document.querySelectorAll('#path-results .path-result-item').forEach(e => e.classList.remove('active'));
+    }, { once: true });
+  }
+
+  function _hidePathChain() {
+    const container = document.getElementById('path-chain-detail');
+    if (container) container.style.display = 'none';
   }
 
   // ── Diff modal ─────────────────────────────
@@ -412,14 +539,12 @@ const App = (() => {
   async function _openDiff() {
     const panel = document.getElementById('diff-panel');
     panel.classList.add('open');
-    // Populate selects with completed scans for current subscription
     const selA = document.getElementById('diff-scan-a');
     const selB = document.getElementById('diff-scan-b');
     document.getElementById('diff-results').innerHTML = '';
 
     if (!currentScanId) return;
     try {
-      // Get the subscription_id of current scan
       const scan = await API.getScan(currentScanId);
       const snapshots = await API.listSnapshots(scan.subscription_id);
       const opts = snapshots.map(s =>
@@ -427,7 +552,6 @@ const App = (() => {
       ).join('');
       selA.innerHTML = '<option value="">Select baseline…</option>' + opts;
       selB.innerHTML = '<option value="">Select current…</option>' + opts;
-      // Pre-select: current scan as B, previous as A
       if (snapshots.length >= 2) {
         selB.value = snapshots[0].scan_id;
         selA.value = snapshots[1].scan_id;
@@ -451,7 +575,6 @@ const App = (() => {
       const diff = await API.diffScans(scanA, scanB);
       results.innerHTML = _renderDiff(diff);
 
-      // Apply diff overlay to graph
       if (activeView === 'graph') {
         GraphView.applyDiffOverlay({
           new:      new Set(diff.new_nodes.map(n => n.node_id)),
@@ -517,7 +640,7 @@ const App = (() => {
     return html;
   }
 
-  // ── Progress — full-screen overlay with percentage ────────────
+  // ── Progress ──────────────────────────────
   function _showProgress(visible, pct = 0, msg = '', phase = '') {
     const overlay = document.getElementById('progress-overlay');
     const bar = document.getElementById('top-progress-bar');
@@ -557,7 +680,6 @@ const App = (() => {
     if (el) el.style.display = visible ? '' : 'none';
   }
 
-  // ── Status bar ─────────────────────────────
   function _setStatus(state, msg) {
     const dot = document.querySelector('#scan-status .status-dot');
     const text = document.getElementById('status-text');
@@ -649,15 +771,13 @@ const App = (() => {
     }
   }
 
-  // ── Scan history: inline snapshot label editing ────────────────────────────
   async function _editSnapshotLabel(scanId, currentLabel) {
     const newLabel = prompt('Snapshot label:', currentLabel || '');
-    if (newLabel === null) return; // cancelled
+    if (newLabel === null) return;
     await API.setSnapshotLabel(scanId, newLabel.trim() || scanId.substring(0, 8));
     await _loadScanList();
   }
 
-  // ── Helpers ────────────────────────────────
   function _fmtDate(iso) {
     if (!iso) return '';
     const d = new Date(iso);
@@ -674,34 +794,142 @@ const App = (() => {
 
 // ── Detail Panel ────────────────────────────────────────────────────────────
 const DetailPanel = (() => {
-  function show(scanId, nodeId) {
+  let _scanId = null;
+  let _nodeId = null;
+  let _navStack = [];  // [{scanId, nodeId}]
+
+  function show(scanId, nodeId, addToHistory = true) {
+    if (addToHistory && _nodeId) {
+      _navStack.push({ scanId: _scanId, nodeId: _nodeId });
+    }
+    _scanId = scanId;
+    _nodeId = nodeId;
+
     API.getNodeDetail(scanId, nodeId).then(node => {
       document.getElementById('detail-title').textContent = node.display_name || node.name;
-      document.getElementById('detail-type').textContent = node.node_type.replace(/_/g, ' ');
+      document.getElementById('detail-type').textContent = node.node_type.replace(/_/g, ' ')
+        + (node.is_owned ? ' · ♦ Owned' : '');
 
       const body = document.getElementById('detail-body');
-      body.innerHTML = _render(node);
+      body.innerHTML = _render(node, scanId);
       document.getElementById('detail-panel').classList.add('open');
+
+      // Update back button
+      _updateBackBtn();
+
+      // Bind owned toggle
+      const ownedBtn = body.querySelector('#btn-toggle-owned');
+      if (ownedBtn) {
+        ownedBtn.addEventListener('click', async () => {
+          const newState = !node.is_owned;
+          try {
+            await API.setNodeOwned(scanId, nodeId, newState);
+            node.is_owned = newState;
+            ownedBtn.textContent = newState ? 'Unmark Owned' : 'Mark as Owned';
+            ownedBtn.style.background = newState ? '#FEF3C7' : '';
+            ownedBtn.style.borderColor = newState ? '#F59E0B' : '';
+            ownedBtn.style.color = newState ? '#B45309' : '';
+            document.getElementById('detail-type').textContent =
+              node.node_type.replace(/_/g, ' ') + (newState ? ' · ♦ Owned' : '');
+            GraphView.markOwnedNodes(
+              newState ? [nodeId] : []
+            );
+          } catch (e) {
+            alert('Error: ' + e.message);
+          }
+        });
+      }
 
       // Navigate to related node on click
       body.querySelectorAll('.rel-item[data-nodeid]').forEach(el => {
         el.addEventListener('click', () => {
           GraphView.highlightNode(el.dataset.nodeid);
-          show(scanId, el.dataset.nodeid);
+          show(scanId, el.dataset.nodeid, true);
         });
       });
+
+      // Load attack paths async
+      _loadNodePaths(scanId, nodeId);
     }).catch(console.error);
+  }
+
+  function _updateBackBtn() {
+    const btn = document.getElementById('detail-back');
+    if (!btn) return;
+    btn.style.display = _navStack.length > 0 ? '' : 'none';
+  }
+
+  function goBack() {
+    if (!_navStack.length) return;
+    const prev = _navStack.pop();
+    show(prev.scanId, prev.nodeId, false);
   }
 
   function close() {
     document.getElementById('detail-panel').classList.remove('open');
+    _navStack = [];
+    _nodeId = null;
+    _scanId = null;
   }
 
-  function _render(node) {
+  async function _loadNodePaths(scanId, nodeId) {
+    const container = document.getElementById('detail-paths-section');
+    if (!container) return;
+    container.innerHTML = '<p style="color:#999; font-size:11px;">Loading paths…</p>';
+    try {
+      const data = await API.getAttackPaths(scanId, { from_node: nodeId, max_depth: 3 });
+      const paths = data.paths || [];
+      if (!paths.length) {
+        container.innerHTML = '<p style="color:#bbb; font-size:11px;">No outbound attack paths found.</p>';
+        return;
+      }
+      container.innerHTML = paths.slice(0, 5).map((p, i) => {
+        const steps = _pathSteps(p);
+        const tgt = p.target_name || steps[steps.length - 1]?.display_name || steps[steps.length - 1]?.name || (p.target || '').split('/').pop() || p.target || '';
+        const hops = p.length ?? p.hops ?? (steps.length - 1);
+        return `<div class="path-result-item" data-pidx="${i}" style="margin-bottom:4px;">
+          <span class="path-hops">${hops}h</span>
+          <span style="font-size:11px;">${_esc(tgt)}</span>
+        </div>`;
+      }).join('');
+
+      let _activeIdx = -1;
+      container.querySelectorAll('.path-result-item').forEach((el, i) => {
+        el.addEventListener('click', () => {
+          container.querySelectorAll('.path-result-item').forEach(e => e.classList.remove('active'));
+          if (_activeIdx === i) {
+            _activeIdx = -1;
+            _hidePathChain();
+            return;
+          }
+          _activeIdx = i;
+          el.classList.add('active');
+          const p = paths[i];
+          const steps = _pathSteps(p);
+          GraphView.highlightPath(steps.map(s => s.node_id).filter(Boolean));
+          // Open attack path panel and show chain there
+          document.getElementById('attack-path-panel')?.classList.add('visible');
+          _showPathChain(p, steps);
+        });
+      });
+    } catch (_) {
+      container.innerHTML = '';
+    }
+  }
+
+  function _render(node, scanId) {
     const riskColor = { critical: '#F44336', risky: '#FF9800', safe: '#4CAF50' }[node.risk_level] || '#9E9E9E';
     const props = node.properties || {};
+    const isOwned = node.is_owned;
 
     let html = `
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:12px;">
+        <button id="btn-toggle-owned" class="btn btn-ghost" style="font-size:11px; padding:4px 10px;
+          ${isOwned ? 'background:#FEF3C7; border-color:#F59E0B; color:#B45309;' : ''}">
+          ${isOwned ? 'Unmark Owned' : 'Mark as Owned'}
+        </button>
+      </div>
+
       <div class="detail-section">
         <div class="detail-section-title">Risk</div>
         <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
@@ -717,7 +945,6 @@ const DetailPanel = (() => {
           </ul>` : ''}
       </div>`;
 
-    // Properties section — show key fields
     const keyFields = _getKeyFields(node.node_type, props);
     if (keyFields.length) {
       html += `<div class="detail-section">
@@ -730,7 +957,6 @@ const DetailPanel = (() => {
       </div>`;
     }
 
-    // Relationships
     const rels = node.relationships || [];
     if (rels.length) {
       html += `<div class="detail-section">
@@ -745,6 +971,11 @@ const DetailPanel = (() => {
         ${rels.length > 25 ? `<div style="font-size:11px; color:#999; padding:4px;">+${rels.length - 25} more</div>` : ''}
       </div>`;
     }
+
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Attack Paths From Here</div>
+      <div id="detail-paths-section" style="min-height:20px;"></div>
+    </div>`;
 
     return html;
   }
@@ -775,7 +1006,7 @@ const DetailPanel = (() => {
     return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  return { show, close };
+  return { show, close, goBack };
 })();
 
 
@@ -804,5 +1035,5 @@ const Tooltip = (() => {
 // ── Boot ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => App.init());
 
-// Close detail panel button
 document.getElementById('detail-close')?.addEventListener('click', () => DetailPanel.close());
+document.getElementById('detail-back')?.addEventListener('click', () => DetailPanel.goBack());

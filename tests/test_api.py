@@ -304,8 +304,10 @@ def test_export_json():
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/json"
     data = r.json()
-    assert data["az_map_version"] == "1.0"
+    assert data["az_map_version"] == "1.1"
     assert len(data["findings"]) == 1
+    assert "nodes" in data
+    assert "edges" in data
 
 
 def test_export_csv():
@@ -318,24 +320,18 @@ def test_export_csv():
     assert len(lines) == 2  # header + 1 finding
 
 
-def test_export_html():
+def test_export_html_removed():
+    """HTML report export was removed — route returns 404."""
     sid = _mk_completed_scan("sub-html")
-    _mk_finding(sid)
     r = client.get(f"/api/export/{sid}/html")
-    assert r.status_code == 200
-    assert "text/html" in r.headers["content-type"]
-    assert "az-map" in r.text
-    assert "Owner at subscription" in r.text
+    assert r.status_code == 404
 
 
-def test_export_paths():
+def test_export_paths_removed():
+    """Paths-only JSON export was removed — route returns 404."""
     sid = _mk_completed_scan("sub-paths-export")
-    _mk_node(sid, "u1", "user", "Alice")
     r = client.get(f"/api/export/{sid}/paths")
-    assert r.status_code == 200
-    data = r.json()
-    assert "escalation_paths" in data
-    assert "lateral_movement_paths" in data
+    assert r.status_code == 404
 
 
 def test_export_not_found():

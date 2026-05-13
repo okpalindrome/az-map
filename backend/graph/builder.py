@@ -121,10 +121,11 @@ def graph_to_cytoscape(
         label = n.display_name or n.name or n.node_id or ""
         if len(label) > 25:
             label = label[:23] + "..."
+        is_owned = bool((n.properties or {}).get("is_owned"))
         cy_nodes.append({
             "data": {
                 "id": n.node_id,
-                "label": label,
+                "nodeLabel": label,
                 "fullLabel": n.display_name or n.name,
                 "nodeType": n.node_type,
                 "riskLevel": n.risk_level,
@@ -133,9 +134,11 @@ def graph_to_cytoscape(
                 "properties": n.properties or {},
                 "color": color,
                 "shape": shape,
-                "borderColor": border_color,
-                "borderWidth": 3 if n.risk_level in ("critical", "risky") else 1,
-            }
+                "borderColor": "#F59E0B" if is_owned else border_color,
+                "borderWidth": 4 if is_owned else (3 if n.risk_level in ("critical", "risky") else 1),
+                "isOwned": is_owned,
+            },
+            "classes": "owned" if is_owned else "",
         })
 
     edge_query = db.query(Edge).filter(
@@ -153,7 +156,7 @@ def graph_to_cytoscape(
                 "source": e.source_node_id,
                 "target": e.target_node_id,
                 "edgeType": e.edge_type,
-                "label": _edge_label(e.edge_type, e.properties or {}),
+                "edgeLabel": _edge_label(e.edge_type, e.properties or {}),
                 "properties": e.properties or {},
             }
         })
